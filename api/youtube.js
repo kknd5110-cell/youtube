@@ -4,7 +4,7 @@
 
 // 허용할 엔드포인트만 화이트리스트로 둡니다.
 // 이렇게 하지 않으면 누구나 이 프록시로 아무 구글 API나 부를 수 있게 됩니다.
-const ALLOWED = new Set(["search", "videos", "channels", "playlistItems", "commentThreads"]);
+const ALLOWED = new Set(["search", "videos", "channels", "playlistItems", "commentThreads", "comments"]);
 
 export default async function handler(req, res) {
   // 앱(Capacitor)에서는 다른 출처에서 호출하므로 CORS 허용이 필요합니다.

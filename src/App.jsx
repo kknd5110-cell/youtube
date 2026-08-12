@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Home, Flame, Bell, Play, ChevronLeft, ThumbsUp, Share2, Bookmark, Menu, X, Loader2, Zap, Volume2, VolumeX, ChevronUp, ChevronDown, MessageCircle, Users, Trash2, RotateCcw } from "lucide-react";
+import { Search, Home, Bell, Play, ChevronLeft, ThumbsUp, Share2, Bookmark, Menu, X, Loader2, Zap, Volume2, VolumeX, ChevronUp, ChevronDown, MessageCircle, Users, Trash2, RotateCcw } from "lucide-react";
 
 // API 키는 서버(api/youtube.js)에만 있습니다. 이 파일에는 키가 들어가지 않아요.
 // 유튜브 API 호출을 프록시 경유로 바꿔주는 헬퍼입니다.
@@ -642,6 +642,34 @@ async function fetchChannelInfo(channelId) {
   );
 }
 
+// 한 댓글의 답글을 가져옵니다 (1유닛). 오래된 순으로 옵니다.
+async function fetchReplies(commentId) {
+  return withCache(
+    `loop:replies:${commentId}`,
+    async () => {
+      try {
+        const data = await ytFetch("comments", {
+          part: "snippet",
+          parentId: commentId,
+          maxResults: "50",
+          textFormat: "plainText",
+        });
+        return (data.items || []).map((c) => ({
+          id: c.id,
+          author: c.snippet?.authorDisplayName,
+          avatar: c.snippet?.authorProfileImageUrl,
+          text: c.snippet?.textDisplay,
+          likes: c.snippet?.likeCount ? formatViewCount(c.snippet.likeCount) : null,
+          time: c.snippet?.publishedAt ? formatRelativeTime(c.snippet.publishedAt) : "",
+        }));
+      } catch (e) {
+        return [];
+      }
+    },
+    5 * 60 * 1000
+  );
+}
+
 // 채널 프로필 사진. 여러 채널을 콤마로 묶어 한 번에 받아오므로 전체가 1유닛입니다.
 // 채널별로 캐싱해서 이미 아는 채널은 다시 묻지 않습니다.
 async function fetchChannelAvatars(channelIds) {
@@ -700,27 +728,66 @@ async function fetchPopular(regionCode = "KR", pageToken = "", categoryId = null
   );
 }
 
-// 홈 화면. 인기 급상승(1유닛)에 구독 채널 최신 영상(채널당 2유닛)을 섞습니다.
-// 검색을 쓰지 않아서 하루 종일 새로고침해도 쿼터가 거의 안 줄어요.
-async function fetchHome(subscribedIds = []) {
-  const popular = await fetchPopular("KR").catch(() => ({ items: [], nextPageToken: null }));
+// 구독한 채널들의 정보를 한 번에 받아옵니다. 50개까지 묶어 부르므로 대개 1유닛이에요.
+async function fetchChannelsInfo(channelIds) {
+  const ids = [...new Set(channelIds.filter(Boolean))];
+  if (ids.length === 0) return [];
 
-  if (subscribedIds.length === 0) {
-    return { items: popular.items, nextPageToken: popular.nextPageToken };
+  const out = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const data = await ytFetch("channels", {
+      part: "snippet,statistics",
+      id: chunk.join(","),
+    });
+    (data.items || []).forEach((c) => {
+      const thumbs = c.snippet?.thumbnails || {};
+      out.push({
+        id: c.id,
+        title: c.snippet?.title,
+        description: c.snippet?.description || "",
+        avatars: [thumbs.high?.url, thumbs.medium?.url, thumbs.default?.url].filter(Boolean),
+        subscribers: c.statistics?.hiddenSubscriberCount
+          ? null
+          : formatViewCount(c.statistics?.subscriberCount),
+        videoCount: c.statistics?.videoCount ? Number(c.statistics.videoCount).toLocaleString() : null,
+      });
+    });
   }
+  return out;
+}
 
-  // 구독이 많으면 앞의 몇 개만 씁니다. 채널당 2유닛이라 무한정 늘리면 부담이 커요.
-  const picked = shuffle(subscribedIds).slice(0, 5);
-  const subVideos = await fetchSubscriptionFeed(picked, 4).catch(() => []);
+// 홈 화면. 인기 급상승 + 무작위 카테고리 2개 + 구독 채널 최신 영상을 섞습니다.
+// 인기 급상승만 쓰면 순위표가 고정이라 새로고침해도 같은 영상만 나와요.
+// 그래서 매번 다른 카테고리를 뽑아 섞습니다. 카테고리당 1유닛이라 부담이 없어요.
+async function fetchHome(subscribedIds = []) {
+  const pool = CATEGORIES.filter((c) => c.id);
+  const picks = shuffle(pool).slice(0, 2);
 
-  const seen = new Set();
-  const dedupe = (list) => list.filter((v) => !seen.has(v.videoId) && seen.add(v.videoId));
+  const [general, catA, catB] = await Promise.all([
+    fetchPopular("KR").catch(() => ({ items: [], nextPageToken: null })),
+    fetchPopular("KR", "", picks[0]?.id).catch(() => ({ items: [] })),
+    fetchPopular("KR", "", picks[1]?.id).catch(() => ({ items: [] })),
+  ]);
+
+  const taken = new Set();
+  const dedupe = (list) => shuffle(list).filter((v) => !taken.has(v.videoId) && taken.add(v.videoId));
+
+  const buckets = [];
+  if (subscribedIds.length > 0) {
+    // 구독이 많으면 앞의 몇 개만 씁니다. 채널당 2유닛이라 무한정 늘리면 부담이 커요.
+    const picked = shuffle(subscribedIds).slice(0, 5);
+    const subVideos = await fetchSubscriptionFeed(picked, 4).catch(() => []);
+    buckets.push(dedupe(subVideos));
+  }
+  buckets.push(dedupe(general.items), dedupe(catA.items), dedupe(catB.items));
 
   return {
-    items: interleave([dedupe(subVideos), dedupe(popular.items)]),
-    nextPageToken: popular.nextPageToken,
+    items: interleave(buckets),
+    nextPageToken: general.nextPageToken,
   };
 }
+
 
 function FilmStrip({ style }) {
   return (
@@ -913,6 +980,88 @@ function VideoCard({ v, onClick, avatars, onOpenChannel }) {
 // 유튜브 iframe은 세로 영상도 16:9 틀에 담아 좌우 검은 여백을 넣어줍니다.
 // 그래서 iframe을 가로로 크게 늘린 뒤 넘치는 부분을 잘라내 화면을 꽉 채웁니다.
 // 댓글 목록. 일반 영상과 숏츠 양쪽에서 씁니다.
+// 답글 목록. 필요할 때만 불러옵니다 (1유닛).
+function Replies({ commentId, count, onSeek }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (items) return;
+    setLoading(true);
+    fetchReplies(commentId)
+      .then(setItems)
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button
+        onClick={toggle}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          color: "#E8A33D",
+          fontSize: 11.5,
+          cursor: "pointer",
+          fontFamily: "'Inter', sans-serif",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+        }}
+      >
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        답글 {count}개
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 10, paddingLeft: 12, borderLeft: "1px solid #231F19", display: "flex", flexDirection: "column", gap: 14 }}>
+          {loading && (
+            <div style={{ display: "flex", alignItems: "center", gap: 7, color: "#8C8578", fontSize: 12 }}>
+              <Loader2 size={13} className="spin" /> 답글을 불러오는 중…
+            </div>
+          )}
+
+          {!loading && items?.length === 0 && (
+            <div style={{ color: "#5C574C", fontSize: 12 }}>답글을 불러오지 못했어요.</div>
+          )}
+
+          {!loading &&
+            items?.map((r) => (
+              <div key={r.id} style={{ display: "flex", gap: 8 }}>
+                <FallbackImage
+                  sources={[r.avatar]}
+                  style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, objectFit: "cover", background: "#231F19" }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <span style={{ color: "#F2EDE4", fontSize: 11.5, fontWeight: 600 }}>{r.author}</span>
+                    <span style={{ color: "#5C574C", fontSize: 10.5, fontFamily: "'IBM Plex Mono', monospace" }}>{r.time}</span>
+                  </div>
+                  <div style={{ color: "#D6D0C4", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    <CommentText text={r.text} onSeek={onSeek} />
+                  </div>
+                  {r.likes && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, color: "#8C8578", fontSize: 10.5 }}>
+                      <ThumbsUp size={11} /> {r.likes}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CommentList({ videoId, compact, onSeek }) {
   const [items, setItems] = useState([]);
   const [token, setToken] = useState(null);
@@ -1015,8 +1164,8 @@ function CommentList({ videoId, compact, onSeek }) {
                   <ThumbsUp size={12} /> {c.likes}
                 </span>
               )}
-              {c.replies > 0 && <span>답글 {c.replies}</span>}
             </div>
+            {c.replies > 0 && <Replies commentId={c.id} count={c.replies} onSeek={onSeek} />}
           </div>
         </div>
       ))}
@@ -1038,87 +1187,82 @@ function CommentList({ videoId, compact, onSeek }) {
   );
 }
 
-function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLike, savedVideos, onToggleSave, loadingMore }) {
+// 세로 전체화면 숏츠 플레이어.
+// 스와이프를 직접 감지하는 대신 브라우저 기본 스크롤 + CSS 스크롤 스냅을 씁니다.
+// 훨씬 부드럽고, 관성 스크롤이나 손가락 속도도 자연스럽게 따라와요.
+function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLike, savedVideos, onToggleSave, loadingMore, onTopicSignal }) {
   const [muted, setMuted] = useState(true);
   const [playing, setPlaying] = useState(true);
   const [showComments, setShowComments] = useState(false);
-  const iframeRef = useRef(null);
-  const lockRef = useRef(false);
-  const touchRef = useRef(null);
+  const scrollerRef = useRef(null);
+  const framesRef = useRef({});
+  const enteredAtRef = useRef(Date.now());
+  const lastIndexRef = useRef(index);
 
-  const v = items[index];
-
-  // 유튜브 iframe에 명령을 보냅니다 (enablejsapi=1 이어야 동작해요).
-  const command = useCallback((func, args = []) => {
-    iframeRef.current?.contentWindow?.postMessage(
+  const post = useCallback((videoId, func, args = []) => {
+    framesRef.current[videoId]?.contentWindow?.postMessage(
       JSON.stringify({ event: "command", func, args }),
       "*"
     );
   }, []);
 
-  // 영상이 바뀌면 재생 상태를 초기화합니다.
+  // 스크롤 위치로 현재 영상을 판단합니다.
+  const handleScroll = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const next = Math.round(el.scrollTop / el.clientHeight);
+    if (next !== index && next >= 0 && next < items.length) setIndex(next);
+  };
+
+  // 영상이 바뀌면 이전 건 멈추고 새 건 재생합니다.
+  // 다음 영상은 미리 로드돼 있어서 곧바로 시작돼요.
   useEffect(() => {
+    const prev = items[lastIndexRef.current];
+    const cur = items[index];
+
+    if (prev && prev.videoId !== cur?.videoId) {
+      post(prev.videoId, "pauseVideo");
+      // 얼마나 봤는지 기록해서 다음 추천에 반영합니다.
+      const stayed = (Date.now() - enteredAtRef.current) / 1000;
+      if (prev.topic) {
+        if (stayed < 3) onTopicSignal(prev.topic, -1);
+        else if (stayed > 15) onTopicSignal(prev.topic, 1);
+      }
+    }
+
+    if (cur) {
+      post(cur.videoId, muted ? "mute" : "unMute");
+      post(cur.videoId, "playVideo");
+    }
+
+    enteredAtRef.current = Date.now();
+    lastIndexRef.current = index;
     setPlaying(true);
     setShowComments(false);
-  }, [index]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, items]);
 
-  // 유튜브가 보내주는 상태 변화를 받아서 재생/정지 아이콘을 맞춥니다.
-  // 영상이 끝나면(state 0) 처음으로 되감아 반복 재생해요.
+  // 목록이 새로 로드되면 맨 위로 돌려놓습니다.
   useEffect(() => {
-    const onMessage = (e) => {
-      if (!e.origin.includes("youtube.com")) return;
-      let data;
-      try {
-        data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
-      } catch (err) {
-        return;
-      }
-      if (data?.event === "onStateChange") {
-        if (data.info === 0) {
-          command("seekTo", [0, true]);
-          command("playVideo");
-        } else if (data.info === 1) setPlaying(true);
-        else if (data.info === 2) setPlaying(false);
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [command]);
+    if (index === 0 && scrollerRef.current) scrollerRef.current.scrollTop = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items.length === 0]);
 
-  const togglePlay = () => {
-    if (playing) {
-      command("pauseVideo");
-      setPlaying(false);
-    } else {
-      command("playVideo");
-      setPlaying(true);
-    }
+  const scrollToIndex = (i) => {
+    const el = scrollerRef.current;
+    if (!el || i < 0 || i >= items.length) return;
+    el.scrollTo({ top: i * el.clientHeight, behavior: "smooth" });
   };
-
-  const toggleMute = () => {
-    command(muted ? "unMute" : "mute");
-    setMuted((m) => !m);
-  };
-
-  const go = useCallback(
-    (delta) => {
-      if (lockRef.current) return;
-      const next = index + delta;
-      if (next < 0 || next >= items.length) return;
-      lockRef.current = true;
-      setIndex(next);
-      setTimeout(() => {
-        lockRef.current = false;
-      }, 450);
-    },
-    [index, items.length, setIndex]
-  );
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "ArrowDown") go(1);
-      else if (e.key === "ArrowUp") go(-1);
-      else if (e.key === "Escape") onExit();
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        scrollToIndex(index + 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        scrollToIndex(index - 1);
+      } else if (e.key === "Escape") onExit();
       else if (e.key === " ") {
         e.preventDefault();
         togglePlay();
@@ -1127,232 +1271,278 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [go, onExit, playing]);
+  }, [index, items.length, playing]);
 
-  if (!v) return null;
+  const togglePlay = () => {
+    const cur = items[index];
+    if (!cur) return;
+    post(cur.videoId, playing ? "pauseVideo" : "playVideo");
+    setPlaying((p) => !p);
+  };
 
-  const liked = likes.includes(v.videoId);
-  const saved = savedVideos.some((x) => x.videoId === v.videoId);
+  const toggleMute = () => {
+    const cur = items[index];
+    if (cur) post(cur.videoId, muted ? "unMute" : "mute");
+    setMuted((m) => !m);
+  };
+
+  if (items.length === 0) return null;
 
   return (
-    <div
-      onWheel={(e) => go(e.deltaY > 0 ? 1 : -1)}
-      onTouchStart={(e) => {
-        touchRef.current = e.touches[0].clientY;
-      }}
-      onTouchEnd={(e) => {
-        if (touchRef.current == null) return;
-        const diff = touchRef.current - e.changedTouches[0].clientY;
-        if (Math.abs(diff) > 50) go(diff > 0 ? 1 : -1);
-        touchRef.current = null;
-      }}
-      style={{
-        position: "relative",
-        height: "calc(100vh - 57px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0A0908",
-        overflow: "hidden",
-      }}
-    >
+    <div style={{ position: "relative", height: "calc(100vh - 57px)", background: "#0A0908" }}>
       <div
+        ref={scrollerRef}
+        onScroll={handleScroll}
+        className="shorts-scroller"
         style={{
-          position: "relative",
-          height: "min(100%, 860px)",
-          aspectRatio: "9 / 16",
-          overflow: "hidden",
-          borderRadius: 14,
-          background: "#000",
+          height: "100%",
+          overflowY: "auto",
+          scrollSnapType: "y mandatory",
+          WebkitOverflowScrolling: "touch",
         }}
       >
-        <iframe
-          key={v.videoId}
-          ref={iframeRef}
-          src={`https://www.youtube.com/embed/${v.videoId}?autoplay=1&mute=1&controls=0&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&iv_load_policy=3`}
-          title={v.title}
-          allow="autoplay; encrypted-media"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: "50%",
-            transform: "translateX(-50%)",
-            height: "100%",
-            // 9:16 틀에서 16:9 플레이어의 좌우 검은 여백을 잘라내려면 약 316% 너비가 필요합니다.
-            width: "316%",
-            border: "none",
-            pointerEvents: "none",
-          }}
-        />
+        {items.map((v, i) => {
+          // 현재와 바로 다음 영상만 실제로 로드합니다.
+          // 다음 걸 미리 띄워두기 때문에 넘겼을 때 곧바로 재생돼요.
+          const mounted = i === index || i === index + 1;
+          const isCurrent = i === index;
+          const liked = likes.includes(v.videoId);
+          const saved = savedVideos.some((x) => x.videoId === v.videoId);
 
-        {/* 화면 아무 곳이나 누르면 재생/일시정지 */}
-        <div onClick={togglePlay} style={{ position: "absolute", inset: 0, cursor: "pointer" }} />
-
-        {/* 멈췄을 때만 가운데 재생 아이콘 */}
-        {!playing && (
-          <div
-            onClick={togglePlay}
-            style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
-              width: 64,
-              height: 64,
-              borderRadius: "50%",
-              background: "rgba(0,0,0,0.6)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            <Play size={28} color="#F2EDE4" fill="#F2EDE4" style={{ marginLeft: 3 }} />
-          </div>
-        )}
-
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleMute();
-          }}
-          style={{
-            position: "absolute",
-            top: 14,
-            right: 14,
-            background: "rgba(0,0,0,0.55)",
-            border: "none",
-            color: "#F2EDE4",
-            width: 38,
-            height: 38,
-            borderRadius: "50%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-          }}
-        >
-          {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-        </button>
-
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 62,
-            bottom: 0,
-            padding: "40px 16px 18px",
-            background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
-            pointerEvents: "none",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <Avatar v={v} avatars={avatars} size={30} />
-            <span style={{ color: "#F2EDE4", fontSize: 13.5, fontWeight: 600, fontFamily: "'Inter', sans-serif" }}>
-              {v.channelTitle}
-            </span>
-          </div>
-          <div
-            style={{
-              color: "#F2EDE4",
-              fontSize: 14,
-              lineHeight: 1.45,
-              fontFamily: "'Inter', sans-serif",
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-            }}
-          >
-            {v.title}
-          </div>
-          <div style={{ color: "#B8B2A4", fontSize: 12, marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" }}>
-            {v.views ? `조회수 ${v.views}회` : ""}{v.views && v.dur ? " · " : ""}{v.dur || ""}
-          </div>
-        </div>
-
-        <div
-          style={{
-            position: "absolute",
-            right: 10,
-            bottom: 24,
-            display: "flex",
-            flexDirection: "column",
-            gap: 16,
-            alignItems: "center",
-          }}
-        >
-          <ShortsButton active={liked} onClick={() => onToggleLike(v.videoId)} icon={ThumbsUp} label="좋아요" count={v.likeCount} />
-          <ShortsButton
-            active={showComments}
-            onClick={() => setShowComments((c) => !c)}
-            icon={MessageCircle}
-            label="댓글"
-            count={v.commentCount}
-          />
-          <ShortsButton
-            active={saved}
-            onClick={() => {
-              if (!saved) onTopicSignal(v.topic, 2);
-              onToggleSave(v);
-            }}
-            icon={Bookmark}
-            label="저장"
-          />
-        </div>
-        {/* 아래에서 올라오는 댓글 패널 */}
-        {showComments && (
-          <div
-            onClick={(e) => e.stopPropagation()}
-            onWheel={(e) => e.stopPropagation()}
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: "75%",
-              background: "#141210",
-              borderTopLeftRadius: 16,
-              borderTopRightRadius: 16,
-              display: "flex",
-              flexDirection: "column",
-              boxShadow: "0 -8px 30px rgba(0,0,0,0.5)",
-            }}
-          >
+          return (
             <div
+              key={v.videoId}
               style={{
+                height: "100%",
+                scrollSnapAlign: "start",
+                scrollSnapStop: "always",
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "space-between",
-                padding: "14px 16px 10px",
-                borderBottom: "1px solid #231F19",
+                justifyContent: "center",
               }}
             >
-              <span style={{ color: "#F2EDE4", fontSize: 14, fontWeight: 600 }}>
-                댓글{v.commentCount ? ` ${v.commentCount}` : ""}
-              </span>
-              <button
-                onClick={() => setShowComments(false)}
-                style={{ background: "none", border: "none", color: "#8C8578", cursor: "pointer", display: "flex" }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div style={{ overflowY: "auto", padding: "14px 16px 20px" }}>
-              <CommentList
-                videoId={v.videoId}
-                compact
-                onSeek={(seconds) => {
-                  command("seekTo", [seconds, true]);
-                  command("playVideo");
-                  setPlaying(true);
-                  // 영상이 보이도록 댓글 패널을 닫습니다.
-                  setShowComments(false);
+              <div
+                style={{
+                  position: "relative",
+                  height: "min(100%, 860px)",
+                  aspectRatio: "9 / 16",
+                  overflow: "hidden",
+                  borderRadius: 14,
+                  background: "#000",
+                  maxWidth: "100%",
                 }}
-              />
+              >
+                {mounted ? (
+                  <iframe
+                    ref={(el) => {
+                      if (el) framesRef.current[v.videoId] = el;
+                      else delete framesRef.current[v.videoId];
+                    }}
+                    src={`https://www.youtube.com/embed/${v.videoId}?autoplay=${isCurrent ? 1 : 0}&mute=1&controls=0&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&iv_load_policy=3`}
+                    title={v.title}
+                    allow="autoplay; encrypted-media"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: "50%",
+                      transform: "translateX(-50%)",
+                      height: "100%",
+                      width: "316%",
+                      border: "none",
+                      pointerEvents: "none",
+                    }}
+                  />
+                ) : (
+                  <img
+                    src={v.thumbnail}
+                    alt=""
+                    style={{ width: "100%", height: "100%", objectFit: "cover", opacity: 0.5 }}
+                  />
+                )}
+
+                {isCurrent && (
+                  <>
+                    <div onClick={togglePlay} style={{ position: "absolute", inset: 0, cursor: "pointer" }} />
+
+                    {!playing && (
+                      <div
+                        onClick={togglePlay}
+                        style={{
+                          position: "absolute",
+                          top: "50%",
+                          left: "50%",
+                          transform: "translate(-50%, -50%)",
+                          width: 64,
+                          height: 64,
+                          borderRadius: "50%",
+                          background: "rgba(0,0,0,0.6)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Play size={28} color="#F2EDE4" fill="#F2EDE4" style={{ marginLeft: 3 }} />
+                      </div>
+                    )}
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleMute();
+                      }}
+                      style={{
+                        position: "absolute",
+                        top: 14,
+                        right: 14,
+                        background: "rgba(0,0,0,0.55)",
+                        border: "none",
+                        color: "#F2EDE4",
+                        width: 38,
+                        height: 38,
+                        borderRadius: "50%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                    </button>
+                  </>
+                )}
+
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 62,
+                    bottom: 0,
+                    padding: "40px 16px 18px",
+                    background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <Avatar v={v} avatars={avatars} size={30} />
+                    <span style={{ color: "#F2EDE4", fontSize: 13.5, fontWeight: 600, fontFamily: "'Inter', sans-serif" }}>
+                      {v.channelTitle}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      color: "#F2EDE4",
+                      fontSize: 14,
+                      lineHeight: 1.45,
+                      fontFamily: "'Inter', sans-serif",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {v.title}
+                  </div>
+                  <div style={{ color: "#B8B2A4", fontSize: 12, marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {v.views ? `조회수 ${v.views}회` : ""}
+                    {v.views && v.dur ? " · " : ""}
+                    {v.dur || ""}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    bottom: 24,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 16,
+                    alignItems: "center",
+                  }}
+                >
+                  <ShortsButton
+                    active={liked}
+                    onClick={() => {
+                      if (!liked) onTopicSignal(v.topic, 2);
+                      onToggleLike(v.videoId);
+                    }}
+                    icon={ThumbsUp}
+                    label="좋아요"
+                    count={v.likeCount}
+                  />
+                  <ShortsButton
+                    active={isCurrent && showComments}
+                    onClick={() => setShowComments((c) => !c)}
+                    icon={MessageCircle}
+                    label="댓글"
+                    count={v.commentCount}
+                  />
+                  <ShortsButton
+                    active={saved}
+                    onClick={() => {
+                      if (!saved) onTopicSignal(v.topic, 2);
+                      onToggleSave(v);
+                    }}
+                    icon={Bookmark}
+                    label="저장"
+                  />
+                </div>
+                {isCurrent && showComments && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onTouchMove={(e) => e.stopPropagation()}
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: "75%",
+                      background: "#141210",
+                      borderTopLeftRadius: 16,
+                      borderTopRightRadius: 16,
+                      display: "flex",
+                      flexDirection: "column",
+                      boxShadow: "0 -8px 30px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "14px 16px 10px",
+                        borderBottom: "1px solid #231F19",
+                      }}
+                    >
+                      <span style={{ color: "#F2EDE4", fontSize: 14, fontWeight: 600 }}>
+                        댓글{v.commentCount ? ` ${v.commentCount}` : ""}
+                      </span>
+                      <button
+                        onClick={() => setShowComments(false)}
+                        style={{ background: "none", border: "none", color: "#8C8578", cursor: "pointer", display: "flex" }}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div style={{ overflowY: "auto", padding: "14px 16px 20px" }}>
+                      <CommentList
+                        videoId={v.videoId}
+                        compact
+                        onSeek={(seconds) => {
+                          post(v.videoId, "seekTo", [seconds, true]);
+                          post(v.videoId, "playVideo");
+                          setPlaying(true);
+                          setShowComments(false);
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })}
       </div>
 
       <div
@@ -1367,8 +1557,8 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
         }}
         className="shorts-arrows"
       >
-        <ArrowBtn onClick={() => go(-1)} disabled={index === 0} icon={ChevronUp} />
-        <ArrowBtn onClick={() => go(1)} disabled={index >= items.length - 1} icon={ChevronDown} />
+        <ArrowBtn onClick={() => scrollToIndex(index - 1)} disabled={index === 0} icon={ChevronUp} />
+        <ArrowBtn onClick={() => scrollToIndex(index + 1)} disabled={index >= items.length - 1} icon={ChevronDown} />
       </div>
 
       <div
@@ -1379,6 +1569,7 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
           color: "#5C574C",
           fontSize: 12,
           fontFamily: "'IBM Plex Mono', monospace",
+          pointerEvents: "none",
         }}
       >
         {index + 1} / {items.length}
@@ -1541,7 +1732,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
             background: "#231F19",
           }}
         />
-        <div style={{ flex: 1, minWidth: 220 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: "'Fraunces', serif", fontSize: 26, fontWeight: 600, color: "#F2EDE4" }}>
             {info.title}
           </div>
@@ -1703,26 +1894,14 @@ function PlayerView({
   onToggleSave,
   avatars,
   onOpenChannel,
+  slotRef,
+  seekTo,
+  onMinimize,
 }) {
   const [copied, setCopied] = useState(false);
-  const playerRef = useRef(null);
-
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [v.videoId]);
-
-  // 댓글의 타임스탬프를 누르면 그 지점으로 이동하고 화면을 위로 올립니다.
-  const seekTo = useCallback((seconds) => {
-    playerRef.current?.contentWindow?.postMessage(
-      JSON.stringify({ event: "command", func: "seekTo", args: [seconds, true] }),
-      "*"
-    );
-    playerRef.current?.contentWindow?.postMessage(
-      JSON.stringify({ event: "command", func: "playVideo", args: [] }),
-      "*"
-    );
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
 
   // "복사됨!" 표시를 잠깐 띄웠다가 되돌립니다.
   useEffect(() => {
@@ -1763,27 +1942,21 @@ function PlayerView({
       </button>
 
       <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 640px", minWidth: 320 }}>
+        {/* minWidth를 0으로 둬야 팝업·분할 화면처럼 좁은 창에서 가로로 넘치지 않습니다. */}
+        <div style={{ flex: "1 1 640px", minWidth: 0 }}>
+          {/* 실제 플레이어는 App에서 한 번만 그려집니다.
+              화면을 옮겨도 iframe이 사라지지 않아야 재생이 안 끊기거든요.
+              여기는 그 플레이어가 놓일 자리만 잡아둡니다. */}
           <div
+            ref={slotRef}
             style={{
               position: "relative",
               width: "100%",
               aspectRatio: "16/9",
               borderRadius: 12,
-              overflow: "hidden",
               background: "#000",
             }}
-          >
-            <iframe
-              key={v.videoId}
-              ref={playerRef}
-              src={`https://www.youtube.com/embed/${v.videoId}?rel=0&enablejsapi=1`}
-              title={v.title}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none" }}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-            />
-          </div>
+          />
 
           <h1
             style={{
@@ -1987,7 +2160,6 @@ function PlayerView({
 const NAV_ITEMS = [
   { icon: Home, label: "홈" },
   { icon: Zap, label: "숏츠" },
-  { icon: Flame, label: "인기" },
   { icon: Users, label: "구독" },
   { icon: Bookmark, label: "보관함" },
 ];
@@ -2006,10 +2178,19 @@ export default function App() {
   const [shortsIndex, setShortsIndex] = useState(0);
   const [shortsLoading, setShortsLoading] = useState(false);
   const [subFeed, setSubFeed] = useState([]);
+  const [subChannels, setSubChannels] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [toast, setToast] = useState(null);
   const [openChannel, setOpenChannel] = useState(null);
+  // 미니 플레이어. 영상을 보다 나가도 재생을 이어가려고 iframe을 App에 두고 위치만 옮깁니다.
+  const [minimized, setMinimized] = useState(false);
+  const [slotRect, setSlotRect] = useState(null);
+  const playerFrameRef = useRef(null);
+  // 아래로 쓸어내려 접기. 손가락을 뗄 때까지의 이동량을 담아둡니다.
+  const [dragY, setDragY] = useState(0);
+  const dragStartRef = useRef(null);
+  const slotRef = useRef(null);
   // 알림을 마지막으로 확인한 시각. 이 이후에 올라온 영상만 "새 영상"으로 셉니다.
   const [notifSeenAt, setNotifSeenAt] = useState(() => loadStore("loop:notifSeenAt", 0));
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2044,6 +2225,7 @@ export default function App() {
     setSubs((prev) => (prev.includes(channelId) ? prev.filter((id) => id !== channelId) : [...prev, channelId]));
     // 구독 탭을 보고 있었다면 목록을 새로 맞춰줍니다.
     setSubFeed([]);
+    setSubChannels([]);
   };
 
   const toggleLike = (videoId) => {
@@ -2111,78 +2293,6 @@ export default function App() {
     }
   }, []);
 
-  const runPopular = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { items, nextPageToken: token } = await fetchPopular("KR");
-      setVideos(items);
-      setNextPageToken(token);
-      setSource({ kind: "popular" });
-    } catch (e) {
-      setError(e.message || "인기 영상을 불러오지 못했어요.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // 첫 로딩. subs는 처음엔 비어 있을 수 있는데, 구독이 생기면 홈을 다시 부르지 않고
-  // 다음 방문에 반영합니다 (매번 다시 부르면 쿼터가 낭비돼요).
-  useEffect(() => {
-    runHome(loadStore("loop:subs", []));
-  }, [runHome]);
-
-  // 종 아이콘에 표시할 데이터를 미리 받아둡니다.
-  // 채널 목록은 1시간 캐싱이라 대부분 요청 없이 캐시에서 나와요.
-  useEffect(() => {
-    if (subs.length === 0) {
-      setSubFeed([]);
-      return;
-    }
-    let cancelled = false;
-    fetchSubscriptionFeed(subs)
-      .then((items) => {
-        if (!cancelled) setSubFeed(items);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [subs]);
-
-  // 마지막 확인 이후 올라온 영상만 알림으로 셉니다.
-  const newUploads = subFeed.filter((v) => new Date(v.publishedAt).getTime() > notifSeenAt);
-
-  const openNotifications = () => {
-    setShowNotifications((open) => {
-      if (!open) {
-        // 열 때 확인 시각을 갱신해서 배지를 지웁니다.
-        const now = Date.now();
-        setNotifSeenAt(now);
-        saveStore("loop:notifSeenAt", now);
-      }
-      return !open;
-    });
-  };
-
-  const handleSubmitSearch = () => {
-    if (!query.trim()) return;
-    setOpenChannel(null);
-    setSelected(null);
-    setActiveNav("홈");
-    setCategory("전체");
-    runSearch(query.trim());
-  };
-
-  const handleCategoryClick = (c) => {
-    setOpenChannel(null);
-    setSelected(null);
-    setActiveNav("홈");
-    setCategory(c.label);
-    if (c.id) runCategory(c.id);
-    else runHome(subs);
-  };
-
   const runShorts = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -2223,32 +2333,123 @@ export default function App() {
       .finally(() => setShortsLoading(false));
   }, [activeNav, shortsIndex, shorts, shortsLoading, loadAvatars]);
 
+  // 구독 탭은 채널 목록을 보여줍니다. 영상 목록은 종 아이콘(알림)에서 따로 씁니다.
   const runSubscriptions = useCallback(async (channelIds) => {
     if (channelIds.length === 0) {
-      setSubFeed([]);
+      setSubChannels([]);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const items = await fetchSubscriptionFeed(channelIds);
-      setSubFeed(items);
-      loadAvatars(items);
+      const list = await fetchChannelsInfo(channelIds);
+      // 구독한 순서대로 정렬합니다.
+      const order = new Map(channelIds.map((id, i) => [id, i]));
+      list.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+      setSubChannels(list);
     } catch (e) {
-      setError(e.message || "구독 영상을 불러오지 못했어요.");
+      setError(e.message || "구독 채널을 불러오지 못했어요.");
     } finally {
       setLoading(false);
     }
-  }, [loadAvatars]);
+  }, []);
+
+  // 종 아이콘에 표시할 데이터를 미리 받아둡니다.
+  // 채널 목록은 1시간 캐싱이라 대부분 요청 없이 캐시에서 나와요.
+  useEffect(() => {
+    if (subs.length === 0) {
+      setSubFeed([]);
+      return;
+    }
+    let cancelled = false;
+    fetchSubscriptionFeed(subs)
+      .then((items) => {
+        if (!cancelled) setSubFeed(items);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [subs]);
+
+  // 마지막 확인 이후 올라온 영상만 알림으로 셉니다.
+  const newUploads = subFeed.filter((v) => new Date(v.publishedAt).getTime() > notifSeenAt);
+
+  const openNotifications = () => {
+    setShowNotifications((open) => {
+      if (!open) {
+        // 열 때 확인 시각을 갱신해서 배지를 지웁니다.
+        const now = Date.now();
+        setNotifSeenAt(now);
+        saveStore("loop:notifSeenAt", now);
+      }
+      return !open;
+    });
+  };
+
+  // 영상을 고르면 항상 펼친 상태로 엽니다.
+  const openVideo = (v) => {
+    setSelected(v);
+    setMinimized(false);
+    setOpenChannel(null);
+  };
+
+  const closePlayer = () => {
+    setSelected(null);
+    setMinimized(false);
+    setDragY(0);
+  };
+
+  // 펼친 플레이어를 아래로 끌면 미니 플레이어로 접힙니다.
+  const dragStart = (y) => {
+    if (minimized) return;
+    dragStartRef.current = y;
+  };
+
+  const dragMove = (y) => {
+    if (dragStartRef.current == null) return;
+    // 위로 올리는 건 무시하고 아래로 내리는 것만 따라갑니다.
+    setDragY(Math.max(0, y - dragStartRef.current));
+  };
+
+  const dragEnd = () => {
+    if (dragStartRef.current == null) return;
+    dragStartRef.current = null;
+    // 120px 넘게 내렸으면 접고, 아니면 제자리로 돌아옵니다.
+    if (dragY > 120) setMinimized(true);
+    setDragY(0);
+  };
+
+  // 접히거나 영상이 바뀌면 끌던 상태를 초기화합니다.
+  useEffect(() => {
+    setDragY(0);
+    dragStartRef.current = null;
+  }, [minimized, selected?.videoId]);
+
+  const handleSubmitSearch = () => {
+    if (!query.trim()) return;
+    setOpenChannel(null);
+    setSelected(null);
+    setActiveNav("홈");
+    setCategory("전체");
+    runSearch(query.trim());
+  };
+
+  const handleCategoryClick = (c) => {
+    setOpenChannel(null);
+    setSelected(null);
+    setActiveNav("홈");
+    setCategory(c.label);
+    if (c.id) runCategory(c.id);
+    else runHome(subs);
+  };
 
   const handleNavClick = (label) => {
     setActiveNav(label);
     setNavOpen(false);
     setSelected(null);
     setOpenChannel(null);
-    if (label === "인기") {
-      runPopular();
-    } else if (label === "숏츠") {
+    if (label === "숏츠") {
       setError(null);
       if (shorts.length === 0) runShorts();
     } else if (label === "구독") {
@@ -2291,6 +2492,95 @@ export default function App() {
     flash("캐시를 비웠어요. 새로고침하면 최신 영상을 받아옵니다.");
   };
 
+  // 펼친 상태에서는 PlayerView가 잡아둔 자리에 플레이어를 겹쳐 놓습니다.
+  // 팝업·분할 화면으로 바뀔 때 창 크기가 급변하므로 ResizeObserver로 즉시 따라갑니다.
+  useEffect(() => {
+    if (!selected || minimized) {
+      setSlotRect(null);
+      return;
+    }
+
+    let frame = null;
+    const measure = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const el = slotRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        // 자리를 아직 못 잡았으면(너비 0) 그리지 않습니다.
+        if (r.width < 10) return;
+        setSlotRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+      });
+    };
+
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    if (slotRef.current) ro.observe(slotRef.current);
+    ro.observe(document.body);
+
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      ro.disconnect();
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [selected, minimized]);
+
+  const playerCommand = useCallback((func, args = []) => {
+    playerFrameRef.current?.contentWindow?.postMessage(
+      JSON.stringify({ event: "command", func, args }),
+      "*"
+    );
+  }, []);
+
+  // 댓글의 타임스탬프를 누르면 그 지점으로 이동합니다.
+  const seekTo = useCallback(
+    (seconds) => {
+      playerCommand("seekTo", [seconds, true]);
+      playerCommand("playVideo");
+      if (!minimized) window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [playerCommand, minimized]
+  );
+
+  // 새로고침. 캐시를 비우고 지금 보고 있는 화면을 다시 불러옵니다.
+  // 앱에는 브라우저 새로고침이 없어서 이 버튼이 그 역할을 해요.
+  const refreshCurrent = useCallback(() => {
+    try {
+      Object.keys(sessionStorage)
+        .filter((k) => k.startsWith("loop:"))
+        .forEach((k) => sessionStorage.removeItem(k));
+    } catch (e) {
+      // 접근이 막혀 있으면 그냥 다시 불러옵니다.
+    }
+
+    setSelected(null);
+    setOpenChannel(null);
+
+    if (activeNav === "숏츠") {
+      setShorts([]);
+      setShortsIndex(0);
+      runShorts();
+    } else if (activeNav === "구독") {
+      setSubChannels([]);
+      runSubscriptions(subs);
+    } else if (activeNav === "보관함") {
+      // 저장 목록은 서버에서 받아오는 게 아니라 새로고침할 게 없습니다.
+    } else if (source.kind === "search") {
+      runSearch(source.query);
+    } else if (source.kind === "category") {
+      runCategory(source.categoryId);
+    } else {
+      runHome(subs);
+    }
+  }, [activeNav, source, subs, runShorts, runSubscriptions, runSearch, runCategory, runHome]);
+
   // ── 브라우저 뒤로가기 ──────────────────────────────────
   // 지금 화면 상태를 ref에 담아둡니다. popstate 핸들러가 오래된 값을 보지 않도록요.
   const navStateRef = useRef(null);
@@ -2300,6 +2590,7 @@ export default function App() {
     activeNav,
     showNotifications,
     showMenu,
+    minimized,
     source,
     handleNavClick,
     goHome: () => {
@@ -2324,8 +2615,11 @@ export default function App() {
         setShowNotifications(false);
       } else if (state.openChannel) {
         setOpenChannel(null);
+      } else if (state.selected && !state.minimized) {
+        // 유튜브처럼 뒤로가기는 먼저 작은 창으로 접습니다.
+        setMinimized(true);
       } else if (state.selected) {
-        setSelected(null);
+        closePlayer();
       } else if (state.activeNav !== "홈") {
         state.handleNavClick("홈");
       } else if (state.source?.kind !== "home") {
@@ -2346,7 +2640,7 @@ export default function App() {
 
   // 보관함일 땐 API를 부르지 않고 저장된 목록을 그대로 보여줍니다.
   const displayList =
-    activeNav === "보관함" ? savedVideos : activeNav === "구독" ? subFeed : videos;
+    activeNav === "보관함" ? savedVideos : videos;
 
   useEffect(() => {
     // 목록이 화면에 그려진 뒤에 프로필 사진을 요청합니다.
@@ -2524,6 +2818,23 @@ export default function App() {
           />
         </div>
 
+        <button
+          onClick={refreshCurrent}
+          title="새로고침"
+          disabled={loading}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 4,
+            display: "flex",
+            cursor: loading ? "default" : "pointer",
+            color: loading ? "#3A342C" : "#B8B2A4",
+            flexShrink: 0,
+          }}
+        >
+          <RotateCcw size={18} className={loading ? "spin" : undefined} />
+        </button>
+
         <div style={{ position: "relative", flexShrink: 0 }}>
           <button
             onClick={openNotifications}
@@ -2614,7 +2925,7 @@ export default function App() {
                     <div
                       key={v.videoId}
                       onClick={() => {
-                        setSelected(v);
+                        openVideo(v);
                         setShowNotifications(false);
                       }}
                       style={{
@@ -2790,16 +3101,13 @@ export default function App() {
             <ChannelView
               channelId={openChannel}
               onBack={() => setOpenChannel(null)}
-              onSelect={(v) => {
-                setOpenChannel(null);
-                setSelected(v);
-              }}
+              onSelect={(v) => openVideo(v)}
               subscribed={subs.includes(openChannel)}
               onToggleSub={() => toggleSub(openChannel)}
               avatars={avatars}
               onOpenChannel={(id) => setOpenChannel(id)}
             />
-          ) : activeNav === "숏츠" && !selected ? (
+          ) : activeNav === "숏츠" && (!selected || minimized) ? (
             loading ? (
               <div
                 style={{
@@ -2831,11 +3139,14 @@ export default function App() {
                 onTopicSignal={bumpTopicScore}
               />
             )
-          ) : selected ? (
+          ) : selected && !minimized ? (
             <PlayerView
               v={selected}
               related={related}
-              onBack={() => setSelected(null)}
+              onBack={() => setMinimized(true)}
+              onMinimize={() => setMinimized(true)}
+              slotRef={slotRef}
+              seekTo={seekTo}
               subscribed={subs.includes(selected.channelId)}
               onToggleSub={() => toggleSub(selected.channelId)}
               liked={likes.includes(selected.videoId)}
@@ -2848,9 +3159,9 @@ export default function App() {
               }}
               onLoadCustom={(videoId, fullVideo) => {
                 if (fullVideo) {
-                  setSelected(fullVideo);
+                  openVideo(fullVideo);
                 } else {
-                  setSelected({ videoId, title: "직접 불러온 영상", channelTitle: "", views: "", description: "" });
+                  openVideo({ videoId, title: "직접 불러온 영상", channelTitle: "", views: "", description: "" });
                 }
               }}
             />
@@ -2940,24 +3251,91 @@ export default function App() {
                 </div>
               )}
 
-              {!loading && !error && displayList.length === 0 && (
+              {activeNav === "구독" && !loading && !error && (
+                subChannels.length === 0 ? (
+                  <div style={{ color: "#5C574C", textAlign: "center", padding: "80px 0", fontFamily: "'Inter', sans-serif" }}>
+                    구독한 채널이 없어요. 영상을 열고 구독을 눌러보세요.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "16px" }}>
+                    {subChannels.map((c) => (
+                      <div
+                        key={c.id}
+                        onClick={() => setOpenChannel(c.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 14,
+                          padding: 14,
+                          borderRadius: 12,
+                          border: "1px solid #231F19",
+                          cursor: "pointer",
+                          minWidth: 0,
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#1C1A16")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <FallbackImage
+                          sources={c.avatars}
+                          fallbackColor={colorForChannel(c.id)}
+                          style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: "50%",
+                            flexShrink: 0,
+                            objectFit: "cover",
+                            background: "#231F19",
+                          }}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              color: "#F2EDE4",
+                              fontSize: 14,
+                              fontWeight: 600,
+                              fontFamily: "'Inter', sans-serif",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {c.title}
+                          </div>
+                          <div
+                            style={{
+                              color: "#8C8578",
+                              fontSize: 11.5,
+                              marginTop: 4,
+                              fontFamily: "'IBM Plex Mono', monospace",
+                            }}
+                          >
+                            {c.subscribers ? `구독자 ${c.subscribers}명` : ""}
+                            {c.subscribers && c.videoCount ? " · " : ""}
+                            {c.videoCount ? `영상 ${c.videoCount}개` : ""}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+
+              {activeNav !== "구독" && !loading && !error && displayList.length === 0 && (
                 <div style={{ color: "#8C8578", textAlign: "center", padding: "80px 0", fontFamily: "'Inter', sans-serif" }}>
                   {activeNav === "보관함"
                     ? "저장한 영상이 아직 없어요. 영상을 열고 저장을 눌러보세요."
-                    : activeNav === "구독"
-                    ? "구독한 채널이 없어요. 영상을 열고 구독을 눌러보세요."
                     : "검색 결과가 없어요."}
                 </div>
               )}
 
-              {!loading && !error && displayList.length > 0 && (
+              {activeNav !== "구독" && !loading && !error && displayList.length > 0 && (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
                   {displayList.map((v) => (
                     <VideoCard
                       key={v.videoId}
                       v={v}
                       avatars={avatars}
-                      onClick={() => setSelected(v)}
+                      onClick={() => openVideo(v)}
                       onOpenChannel={(id) => setOpenChannel(id)}
                     />
                   ))}
@@ -2995,6 +3373,133 @@ export default function App() {
         </div>
       </div>
 
+      {/* 영상 플레이어. 화면을 옮겨도 이 iframe은 그대로 살아 있어서 재생이 안 끊깁니다.
+          펼친 상태에선 PlayerView가 잡아둔 자리에, 접으면 오른쪽 아래 작은 창으로 갑니다. */}
+      {selected && (minimized || slotRect) && (
+        <div
+          style={
+            minimized
+              ? {
+                  position: "fixed",
+                  right: 16,
+                  bottom: 16,
+                  // 유튜브 정책상 임베드 플레이어는 200x200px 아래로 줄이면 안 됩니다.
+                  // 좁은 창(팝업·분할 화면)에서도 넘치지 않게 합니다.
+                  // 다만 유튜브 정책상 200x200px 아래로는 줄이지 않습니다.
+                  width: "max(360px, min(360px, calc(100vw - 32px)))",
+                  height: 202,
+                  maxWidth: "calc(100vw - 32px)",
+                  minWidth: 200,
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  background: "#000",
+                  boxShadow: "0 12px 40px rgba(0,0,0,0.65)",
+                  border: "1px solid #2C271F",
+                  zIndex: 70,
+                }
+              : {
+                  position: "fixed",
+                  top: slotRect.top,
+                  left: slotRect.left,
+                  width: slotRect.width,
+                  height: slotRect.height,
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  background: "#000",
+                  zIndex: 20,
+                  // 끌어내린 만큼 따라 움직이고, 내려갈수록 살짝 작아지며 흐려집니다.
+                  transform: dragY ? `translateY(${dragY}px) scale(${Math.max(0.82, 1 - dragY / 900)})` : undefined,
+                  transformOrigin: "bottom right",
+                  opacity: dragY ? Math.max(0.55, 1 - dragY / 500) : 1,
+                  transition: dragStartRef.current == null ? "transform 0.22s ease, opacity 0.22s ease" : "none",
+                }
+          }
+        >
+          {/* 위쪽 띠를 잡고 아래로 쓸어내리면 접힙니다.
+              플레이어 컨트롤을 가리지 않도록 상단 일부만 차지해요. */}
+          {!minimized && (
+            <div
+              onTouchStart={(e) => dragStart(e.touches[0].clientY)}
+              onTouchMove={(e) => dragMove(e.touches[0].clientY)}
+              onTouchEnd={dragEnd}
+              onMouseDown={(e) => dragStart(e.clientY)}
+              onMouseMove={(e) => dragStartRef.current != null && dragMove(e.clientY)}
+              onMouseUp={dragEnd}
+              onMouseLeave={dragEnd}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 46,
+                zIndex: 2,
+                cursor: dragStartRef.current != null ? "grabbing" : "grab",
+                touchAction: "none",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "flex-start",
+                paddingTop: 7,
+              }}
+            >
+              {/* 끌 수 있다는 걸 알려주는 손잡이 */}
+              <div
+                style={{
+                  width: 38,
+                  height: 4,
+                  borderRadius: 2,
+                  background: "rgba(255,255,255,0.35)",
+                  opacity: dragY ? 0.9 : 0.5,
+                }}
+              />
+            </div>
+          )}
+
+          <iframe
+            key={selected.videoId}
+            ref={playerFrameRef}
+            src={`https://www.youtube.com/embed/${selected.videoId}?rel=0&enablejsapi=1&autoplay=1`}
+            title={selected.title}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none" }}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
+            allowFullScreen
+          />
+
+          {minimized && (
+            <>
+              {/* 작은 창을 누르면 다시 펼칩니다 */}
+              <div
+                onClick={() => setMinimized(false)}
+                style={{ position: "absolute", inset: 0, cursor: "pointer" }}
+              />
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closePlayer();
+                }}
+                title="닫기"
+                style={{
+                  position: "absolute",
+                  top: 6,
+                  right: 6,
+                  width: 26,
+                  height: 26,
+                  borderRadius: "50%",
+                  background: "rgba(0,0,0,0.65)",
+                  border: "none",
+                  color: "#F2EDE4",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <X size={15} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {toast && (
         <div
           style={{
@@ -3019,6 +3524,8 @@ export default function App() {
       <style>{`
         * { box-sizing: border-box; }
         input::placeholder { color: #5C574C; }
+        .shorts-scroller { scrollbar-width: none; }
+        .shorts-scroller::-webkit-scrollbar { display: none; }
         .mobile-only { display: none !important; }
         @media (max-width: 720px) {
           .sidebar { display: none !important; }
