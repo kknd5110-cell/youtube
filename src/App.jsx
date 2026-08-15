@@ -1176,6 +1176,7 @@ const VideoCard = React.memo(
         </div>
         <div style={{ minWidth: 0 }}>
           <div
+            className="card-title"
             style={{
               color: "#F2EDE4",
               fontFamily: "'Fraunces', serif",
@@ -1197,18 +1198,23 @@ const VideoCard = React.memo(
               e.stopPropagation();
               onOpenChannel(v.channelId);
             }}
+            className="card-sub"
             style={{
               color: "#8C8578",
               fontSize: 12.5,
               marginTop: 4,
               fontFamily: "'Inter', sans-serif",
-              display: "inline-block",
+              display: "block",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
               cursor: v.channelId && onOpenChannel ? "pointer" : "inherit",
             }}
           >
             {v.channelTitle}
           </div>
           <div
+            className="card-meta"
             style={{
               color: "#8C8578",
               fontSize: 12,
@@ -2883,6 +2889,9 @@ export default function App() {
   // 첫 재생이 시작되기 전까지는 유튜브 로딩 화면(로고·동영상 더보기)이 보입니다.
   // 그동안 우리 화면으로 덮으려고 씁니다.
   const [started, setStarted] = useState(false);
+  // 로딩 덮개는 잠깐만 보여줍니다. 자동 재생이 막힌 기기(아이폰)에서는
+  // 덮개를 걷어야 유튜브 재생 버튼을 누를 수 있어요.
+  const [coverShown, setCoverShown] = useState(true);
   const [speedOpen, setSpeedOpen] = useState(false);
   // 진행 바를 끄는 동안에는 재생 위치가 손가락을 따라오게 합니다.
   const [scrubbing, setScrubbing] = useState(null);
@@ -2915,10 +2924,11 @@ export default function App() {
     controlsTimerRef.current = setTimeout(() => setControlsShown(false), 2000);
   }, []);
 
-  // 재생 신호가 오지 않는 경우(자동재생 차단 등)에도 덮개가 남지 않도록 합니다.
+  // 덮개는 2.5초만 유지합니다. 그 안에 재생이 시작되면 자연스럽게 걷히고,
+  // 자동 재생이 막힌 기기에서는 덮개가 사라져 유튜브 재생 버튼을 누를 수 있습니다.
   useEffect(() => {
     if (!selected || started) return;
-    const t = setTimeout(() => setStarted(true), 4000);
+    const t = setTimeout(() => setCoverShown(false), 2500);
     return () => clearTimeout(t);
   }, [selected, started]);
 
@@ -3196,6 +3206,7 @@ export default function App() {
     setScrubbing(null);
     setEnded(false);
     setStarted(false);
+    setCoverShown(true);
     setSelected(v);
     setMinimized(false);
     setFullscreen(false);
@@ -4928,10 +4939,10 @@ export default function App() {
               width: "100%",
               height: "100%",
               border: "none",
-              // 컨트롤을 직접 그리므로 iframe은 터치를 받지 않습니다.
-              // 그래야 화면 어디서나 쓸어내리기·탭이 우리에게 오고,
-              // 유튜브 종료 화면 카드를 눌러 앱 밖으로 나가는 일도 막힙니다.
-              pointerEvents: "none",
+              // 재생이 시작된 뒤에는 우리가 컨트롤을 그리므로 터치를 받지 않습니다.
+              // 다만 아이폰은 자동 재생을 막아서, 시작 전에는 유튜브 재생 버튼을
+              // 직접 누를 수 있도록 터치를 넘겨줍니다.
+              pointerEvents: started ? "none" : "auto",
             }}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
           />
@@ -4939,7 +4950,7 @@ export default function App() {
           {/* 영상 전체가 우리 영역입니다. 어디서든 아래로 쓸어내리면 접히고,
               화면을 셋으로 나눠 왼쪽은 10초 뒤로, 오른쪽은 10초 앞으로,
               가운데는 컨트롤 표시입니다. */}
-          {!minimized && (
+          {!minimized && started && (
             <div
               {...dragHandlers}
               onClick={(e) => {
@@ -4978,7 +4989,7 @@ export default function App() {
 
           {/* 재생이 시작되기 전에는 유튜브 로딩 화면(로고·제목·동영상 더보기)이 보입니다.
               끌 수 없으므로 영상 썸네일로 덮어 가립니다. */}
-          {!minimized && !started && (
+          {!minimized && !started && coverShown && (
             <div
               style={{
                 position: "absolute",
@@ -5531,8 +5542,18 @@ export default function App() {
       <style>{`
         * { box-sizing: border-box; }
         input::placeholder { color: #5C574C; }
+        h1, .selectable, .selectable * {
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
 
         /* 아이폰 노치·홈바를 피해 안전 영역만큼 여백을 둡니다. */
+        html, body {
+          /* 긴 제목·링크가 화면을 옆으로 밀어내지 않게 합니다.
+             밀려나면 화면에 고정된 플레이어의 위치도 같이 어긋나요. */
+          overflow-x: hidden;
+          max-width: 100%;
+        }
         body {
           padding-top: env(safe-area-inset-top);
           padding-bottom: env(safe-area-inset-bottom);
@@ -5583,6 +5604,16 @@ export default function App() {
           .page-pad {
             padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
           }
+          /* 카드 글씨를 줄여 제목·조회수가 두 줄로 접히지 않게 합니다. */
+          .card-title { font-size: 12.5px !important; }
+          .card-sub { font-size: 11px !important; }
+          .card-meta {
+            font-size: 10.5px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+          }
+
           /* 카드가 너무 커 보이지 않게 최소 폭을 줄입니다. */
           .video-grid {
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
