@@ -2,8 +2,26 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>우진 · 영상 앱</title>
+    <!-- viewport-fit=cover: 아이폰 노치·홈바 영역까지 화면을 채웁니다. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0E0D0B" />
+
+    <!-- 홈 화면에 추가했을 때 앱처럼 뜨게 하는 설정 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="키넥스" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" href="/icon-192.png" />
+    <title>키넥스 · 영상 앱</title>
+    <!-- 자주 쓰는 서버에 미리 연결해둡니다. 첫 요청이 눈에 띄게 빨라져요. -->
+    <link rel="preconnect" href="https://www.youtube.com" />
+    <link rel="preconnect" href="https://i.ytimg.com" />
+    <link rel="preconnect" href="https://yt3.ggpht.com" />
+    <link rel="dns-prefetch" href="https://www.googleapis.com" />
   </head>
   <body style="margin:0;">
     <div id="root"></div>
