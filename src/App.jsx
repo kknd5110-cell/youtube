@@ -1568,7 +1568,7 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
   if (items.length === 0) return null;
 
   return (
-    <div style={{ position: "relative", height: "calc(100vh - 57px)", background: "#0A0908" }}>
+    <div className="shorts-stage" style={{ position: "relative", height: "calc(100vh - 57px)", background: "#0A0908" }}>
       <div
         ref={scrollerRef}
         onScroll={handleScroll}
@@ -2015,7 +2015,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
   const hasMore = info.description.length > 220;
 
   return (
-    <div style={{ padding: "20px 28px 60px", maxWidth: 1400, margin: "0 auto" }}>
+    <div className="page-pad" style={{ padding: "20px 28px 60px", maxWidth: 1400, margin: "0 auto" }}>
       <BackLink onClick={onBack} />
 
       {(info.bannerSources || []).length > 0 && !bannerFailed && (
@@ -2132,7 +2132,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
       {videos.length === 0 ? (
         <div style={{ color: "#5C574C", padding: "40px 0", fontSize: 13 }}>영상을 불러오지 못했어요.</div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
+        <div className="video-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
           {videos.map((v) => (
             <VideoCard
               key={v.videoId}
@@ -2526,7 +2526,7 @@ function PlayerView({
   const handleShare = () => onShare(v);
 
   return (
-    <div style={{ padding: "20px 28px 60px", maxWidth: 1400, margin: "0 auto" }}>
+    <div className="page-pad" style={{ padding: "20px 28px 60px", maxWidth: 1400, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0 16px" }}>
         <button
           onClick={onBack}
@@ -4004,6 +4004,7 @@ export default function App() {
       />
 
       <div
+        className="top-bar"
         style={{
           position: "sticky",
           top: 0,
@@ -4440,7 +4441,7 @@ export default function App() {
               }}
             />
           ) : (
-            <div style={{ padding: "20px 28px 60px" }}>
+            <div className="page-pad" style={{ padding: "20px 28px 60px" }}>
               {activeNav === "기록" ? (
                 <div
                   style={{
@@ -4809,7 +4810,7 @@ export default function App() {
               )}
 
               {activeNav !== "구독" && !loading && !error && displayList.length > 0 && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
+                <div className="video-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
                   {displayList.map((v) => (
                     <VideoCard
                       key={v.videoId}
@@ -4858,6 +4859,7 @@ export default function App() {
       {selected && (minimized || fullscreen || slotRect) && (
         <div
           ref={playerBoxRef}
+          className={minimized ? "mini-player" : undefined}
           onPointerMove={() => {
             // 끌고 있는 중이거나 이미 보이는 중이면 아무것도 하지 않습니다.
             if (dragStartRef.current != null || controlsShown) return;
@@ -4880,12 +4882,12 @@ export default function App() {
                   position: "fixed",
                   right: 16,
                   bottom: 16,
+                  // 좁은 화면에서는 아래 탭 바 위로 올라갑니다 (.mini-player)
                   // 유튜브 정책상 임베드 플레이어는 200x200px 아래로 줄이면 안 됩니다.
-                  // 좁은 창(팝업·분할 화면)에서도 넘치지 않게 합니다.
+                  // 좁은 화면에서도 넘치지 않게 합니다.
                   // 다만 유튜브 정책상 200x200px 아래로는 줄이지 않습니다.
-                  width: "max(360px, min(360px, calc(100vw - 32px)))",
+                  width: "min(360px, calc(100vw - 24px))",
                   height: 202,
-                  maxWidth: "calc(100vw - 32px)",
                   minWidth: 200,
                   borderRadius: 12,
                   overflow: "hidden",
@@ -5463,6 +5465,48 @@ export default function App() {
         </>
       )}
 
+      {/* 좁은 화면용 아래 탭 바. 사이드바 대신 씁니다. */}
+      <div
+        className="bottom-tabs"
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 75,
+          background: "#0E0D0B",
+          borderTop: "1px solid #231F19",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        {NAV_ITEMS.map(({ icon: Icon, label }) => {
+          const active = activeNav === label;
+          return (
+            <button
+              key={label}
+              onClick={() => handleNavClick(label)}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "none",
+                border: "none",
+                padding: "9px 2px 8px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 3,
+                color: active ? "#E8A33D" : "#8C8578",
+                cursor: "pointer",
+                fontFamily: "'Inter', sans-serif",
+              }}
+            >
+              <Icon size={19} />
+              <span style={{ fontSize: 10.5, fontWeight: active ? 600 : 400 }}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {toast && (
         <div
           style={{
@@ -5519,20 +5563,45 @@ export default function App() {
         .shorts-scroller { scrollbar-width: none; }
         .shorts-scroller::-webkit-scrollbar { display: none; }
         .mobile-only { display: none !important; }
-        @media (max-width: 720px) {
+        .bottom-tabs { display: none; }
+
+        /* 600px 이하(=휴대폰)에서만 모바일 화면으로 바뀝니다.
+           태블릿은 세로로 들어도 폭이 720px 정도라 지금 화면을 그대로 씁니다. */
+        @media (max-width: 600px) {
+          /* 좁은 화면에서는 옆 사이드바 대신 아래 탭 바를 씁니다. */
           .sidebar { display: none !important; }
-          .mobile-only { display: flex !important; }
+          .mobile-only { display: none !important; }
           .shorts-arrows { display: none !important; }
-          .sidebar-open {
-            display: block !important;
-            position: fixed;
-            top: 57px;
-            left: 0;
-            bottom: 0;
-            width: 180px;
-            background: #0E0D0B;
-            border-right: 1px solid #231F19;
-            z-index: 30;
+          .bottom-tabs { display: flex !important; }
+
+          /* 양옆 여백을 줄여 화면을 넓게 씁니다. */
+          .page-pad {
+            padding-left: 12px !important;
+            padding-right: 12px !important;
+          }
+          /* 탭 바에 가리지 않도록 아래쪽을 비워둡니다. */
+          .page-pad {
+            padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
+          }
+          /* 카드가 너무 커 보이지 않게 최소 폭을 줄입니다. */
+          .video-grid {
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
+            gap: 18px 10px !important;
+          }
+          /* 상단 바를 조금 촘촘하게 */
+          .top-bar {
+            padding: 10px 12px !important;
+            gap: 8px !important;
+          }
+          /* 숏츠는 탭 바 높이만큼 짧게 잡아야 잘리지 않습니다. */
+          .shorts-stage {
+            height: calc(100vh - 57px - 76px - env(safe-area-inset-bottom)) !important;
+          }
+
+          /* 작은 창은 탭 바 위에 놓습니다. */
+          .mini-player {
+            bottom: calc(72px + env(safe-area-inset-bottom)) !important;
+            right: 12px !important;
           }
         }
         ::-webkit-scrollbar { height: 6px; width: 8px; }
