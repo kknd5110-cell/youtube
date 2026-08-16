@@ -2647,13 +2647,15 @@ function PlayerView({
                   fontWeight: 600,
                   fontSize: 13.5,
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                 }}
               >
                 {subscribed ? "구독중" : "구독"}
               </button>
             </div>
 
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="action-row" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button
                 onClick={onToggleLike}
                 style={{
@@ -2668,6 +2670,8 @@ function PlayerView({
                   fontSize: 13,
                   cursor: "pointer",
                   fontFamily: "'Inter', sans-serif",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                 }}
               >
                 <ThumbsUp size={15} /> 좋아요{v.likeCount ? ` ${v.likeCount}` : ""}
@@ -2705,6 +2709,8 @@ function PlayerView({
                   fontSize: 13,
                   cursor: "pointer",
                   fontFamily: "'Inter', sans-serif",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                 }}
               >
                 <Bookmark size={15} fill={saved ? "#17140F" : "none"} /> {saved ? "저장됨" : "저장"}
@@ -2723,6 +2729,8 @@ function PlayerView({
                   fontSize: 13,
                   cursor: "pointer",
                   fontFamily: "'Inter', sans-serif",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                 }}
               >
                 <ListPlus size={15} /> 재생목록
@@ -2884,6 +2892,8 @@ export default function App() {
   // 자막 크기(-1 작게 ~ 3 아주 크게)와 화질 요청값입니다.
   const [captionSize, setCaptionSize] = useState(0);
   const [quality, setQuality] = useState("auto");
+  // 전체화면일 때 화면을 돌려야 하는지 (좁고 세로로 든 기기)
+  const [rotateFullscreen, setRotateFullscreen] = useState(false);
   // 영상이 끝났는지. 유튜브 종료 화면 대신 우리 화면을 띄우려고 씁니다.
   const [ended, setEnded] = useState(false);
   // 첫 재생이 시작되기 전까지는 유튜브 로딩 화면(로고·동영상 더보기)이 보입니다.
@@ -2892,6 +2902,9 @@ export default function App() {
   // 로딩 덮개는 잠깐만 보여줍니다. 자동 재생이 막힌 기기(아이폰)에서는
   // 덮개를 걷어야 유튜브 재생 버튼을 누를 수 있어요.
   const [coverShown, setCoverShown] = useState(true);
+  // 렌더 밖(메시지 핸들러)에서 자막 상태를 참조하기 위한 사본입니다.
+  const captionsOnRef = useRef(false);
+  captionsOnRef.current = captionsOn;
   const [speedOpen, setSpeedOpen] = useState(false);
   // 진행 바를 끄는 동안에는 재생 위치가 손가락을 따라오게 합니다.
   const [scrubbing, setScrubbing] = useState(null);
@@ -2923,6 +2936,80 @@ export default function App() {
     if (pausedRef.current) return;
     controlsTimerRef.current = setTimeout(() => setControlsShown(false), 2000);
   }, []);
+
+  // 전체화면에서는 가로로 보여줍니다.
+  // 기기 방향을 바꿀 수 있으면 그렇게 하고, 안 되면 플레이어를 90도 돌립니다.
+  useEffect(() => {
+    if (!fullscreen) {
+      setRotateFullscreen(false);
+      // 방향 잠금을 풀어둡니다.
+      try {
+        window.screen?.orientation?.unlock?.();
+      } catch (e) {
+        // 지원하지 않는 기기는 그냥 넘어갑니다.
+      }
+      return;
+    }
+
+    const decide = () => {
+      const narrow = window.innerWidth <= 600;
+      const portrait = window.innerHeight > window.innerWidth;
+      setRotateFullscreen(narrow && portrait);
+    };
+
+    // 기기 방향을 직접 바꿀 수 있으면 그게 가장 자연스럽습니다.
+    let locked = false;
+    try {
+      const p = window.screen?.orientation?.lock?.("landscape");
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          locked = true;
+          setRotateFullscreen(false);
+        }).catch(decide);
+      } else {
+        decide();
+      }
+    } catch (e) {
+      decide();
+    }
+
+    const onResize = () => {
+      if (!locked) decide();
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, [fullscreen]);
+
+  // 전체화면에 들어가면 화면을 가로로 돌립니다. 나오면 잠금을 풉니다.
+  // 아이폰 사파리는 이 기능을 지원하지 않아 조용히 넘어갑니다.
+  useEffect(() => {
+    const orientation = window.screen?.orientation;
+    if (!orientation?.lock) return;
+
+    if (fullscreen) {
+      orientation.lock("landscape").catch(() => {
+        // 지원하지 않는 기기에서는 그냥 둡니다.
+      });
+    } else {
+      try {
+        orientation.unlock();
+      } catch (e) {
+        // 무시
+      }
+    }
+
+    return () => {
+      try {
+        orientation.unlock();
+      } catch (e) {
+        // 무시
+      }
+    };
+  }, [fullscreen]);
 
   // 덮개는 2.5초만 유지합니다. 그 안에 재생이 시작되면 자연스럽게 걷히고,
   // 자동 재생이 막힌 기기에서는 덮개가 사라져 유튜브 재생 버튼을 누를 수 있습니다.
@@ -3558,6 +3645,22 @@ export default function App() {
     const timers = [300, 900, 2000].map((ms) => setTimeout(startListening, ms));
     const keepAlive = setInterval(startListening, 5000);
 
+    // 기기 설정 때문에 자막이 저절로 켜지는 경우가 있어, 켠 적이 없으면 내려둡니다.
+    if (!captionsOnRef.current) {
+      [700, 1600, 3000].forEach((ms) =>
+        timers.push(
+          setTimeout(() => {
+            ["captions", "cc"].forEach((mod) =>
+              playerFrameRef.current?.contentWindow?.postMessage(
+                JSON.stringify({ event: "command", func: "unloadModule", args: [mod] }),
+                "*"
+              )
+            );
+          }, ms)
+        )
+      );
+    }
+
     return () => {
       window.removeEventListener("message", onMessage);
       timers.forEach(clearTimeout);
@@ -3619,9 +3722,15 @@ export default function App() {
   // 명령어(loadModule)는 잘 안 먹어서, 주소에 담아 그 지점부터 다시 여는 방식을 씁니다.
   const toggleCaptions = useCallback(() => {
     setResumeAt(Math.max(0, Math.floor(estimateTime()) - 1));
-    setCaptionsOn((on) => !on);
-    // 혹시 명령어가 먹는 플레이어라면 그것도 같이 시도합니다.
-    playerCommand(captionsOn ? "unloadModule" : "loadModule", ["captions"]);
+    const next = !captionsOn;
+    setCaptionsOn(next);
+    // 명령어가 먹는 플레이어라면 그쪽으로도 같이 시도합니다.
+    // 모듈 이름이 기기마다 달라 둘 다 보냅니다.
+    ["captions", "cc"].forEach((mod) => {
+      playerCommand(next ? "loadModule" : "unloadModule", [mod]);
+      // 끌 때는 선택된 자막 트랙도 비워야 확실히 사라집니다.
+      if (!next) playerCommand("setOption", [mod, "track", {}]);
+    });
   }, [playerCommand, captionsOn, estimateTime]);
 
   // 자막 크기. -1(작게) ~ 3(아주 크게)
@@ -4050,7 +4159,10 @@ export default function App() {
             alt=""
             style={{ height: 26, width: "auto", display: "block" }}
           />
-          <span style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 20, color: "#F2EDE4", letterSpacing: -0.5 }}>
+          <span
+            className="logo-text"
+            style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 20, color: "#F2EDE4", letterSpacing: -0.5 }}
+          >
             키넥스
           </span>
         </div>
@@ -4157,8 +4269,8 @@ export default function App() {
                   position: "absolute",
                   top: 34,
                   right: 0,
-                  width: 320,
-                  maxHeight: 420,
+                  width: "min(320px, calc(100vw - 24px))",
+                  maxHeight: "min(420px, 60vh)",
                   overflowY: "auto",
                   background: "#141210",
                   border: "1px solid #231F19",
@@ -4269,7 +4381,7 @@ export default function App() {
                   position: "absolute",
                   top: 40,
                   right: 0,
-                  width: 268,
+                  width: "min(268px, calc(100vw - 24px))",
                   background: "#141210",
                   border: "1px solid #231F19",
                   borderRadius: 12,
@@ -4881,11 +4993,16 @@ export default function App() {
               ? {
                   position: "fixed",
                   inset: 0,
-                  width: "100vw",
-                  height: "100vh",
+                  // 세로로 든 폰에서는 90도 돌려 화면을 꽉 채웁니다.
+                  width: rotateFullscreen ? "100vh" : "100vw",
+                  height: rotateFullscreen ? "100vw" : "100vh",
+                  top: rotateFullscreen ? "50%" : 0,
+                  left: rotateFullscreen ? "50%" : 0,
+                  transformOrigin: "center",
                   background: "#000",
                   zIndex: 90,
                   overflow: "hidden",
+                  transform: rotateFullscreen ? "translate(-50%, -50%) rotate(90deg)" : undefined,
                   transition: "transform 0.22s ease, opacity 0.22s ease",
                 }
               : minimized
@@ -4927,9 +5044,9 @@ export default function App() {
           <iframe
             key={selected.videoId}
             ref={playerFrameRef}
-            src={`https://www.youtube.com/embed/${selected.videoId}?rel=0&enablejsapi=1&autoplay=1&fs=0&playsinline=1&controls=0&iv_load_policy=3&modestbranding=1&showinfo=0&cc_load_policy=${
-              captionsOn ? 1 : 0
-            }&cc_lang_pref=ko${quality !== "auto" ? `&vq=${quality}` : ""}${
+            src={`https://www.youtube.com/embed/${selected.videoId}?rel=0&enablejsapi=1&autoplay=1&fs=0&playsinline=1&controls=0&iv_load_policy=3&modestbranding=1&showinfo=0${
+              captionsOn ? "&cc_load_policy=1&cc_lang_pref=ko" : "&cc_load_policy=0"
+            }${quality !== "auto" ? `&vq=${quality}` : ""}${
               resumeAt ? `&start=${resumeAt}` : ""
             }`}
             title={selected.title}
@@ -5478,7 +5595,7 @@ export default function App() {
 
       {/* 좁은 화면용 아래 탭 바. 사이드바 대신 씁니다. */}
       <div
-        className="bottom-tabs"
+        className={`bottom-tabs${fullscreen ? " hidden-on-fullscreen" : ""}`}
         style={{
           position: "fixed",
           left: 0,
@@ -5542,6 +5659,15 @@ export default function App() {
       <style>{`
         * { box-sizing: border-box; }
         input::placeholder { color: #5C574C; }
+
+        /* 좁은 화면에서 버튼 글자가 한 글자씩 세로로 서는 걸 막습니다. */
+        button {
+          white-space: nowrap;
+        }
+        .action-row button {
+          flex-shrink: 0 !important;
+          white-space: nowrap !important;
+        }
         h1, .selectable, .selectable * {
           overflow-wrap: anywhere;
           word-break: break-word;
@@ -5555,7 +5681,6 @@ export default function App() {
           max-width: 100%;
         }
         body {
-          padding-top: env(safe-area-inset-top);
           padding-bottom: env(safe-area-inset-bottom);
           background: #0E0D0B;
           /* 홈 화면 앱으로 열었을 때 화면 전체를 당겨 늘리지 않게 합니다. */
@@ -5604,6 +5729,14 @@ export default function App() {
           .page-pad {
             padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
           }
+          /* 버튼이 좁아 눌리지 않게, 줄바꿈 대신 옆으로 넘겨 봅니다. */
+          .action-row {
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            padding-bottom: 4px;
+          }
+          .action-row::-webkit-scrollbar { display: none; }
+
           /* 카드 글씨를 줄여 제목·조회수가 두 줄로 접히지 않게 합니다. */
           .card-title { font-size: 12.5px !important; }
           .card-sub { font-size: 11px !important; }
@@ -5619,15 +5752,25 @@ export default function App() {
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
             gap: 18px 10px !important;
           }
-          /* 상단 바를 조금 촘촘하게 */
+          /* 상단 바를 촘촘하게. 아이폰 상태표시줄에 가리지 않도록 위를 띄웁니다. */
           .top-bar {
-            padding: 10px 12px !important;
+            padding: calc(10px + env(safe-area-inset-top)) 12px 10px !important;
             gap: 8px !important;
+          }
+          /* 좁은 화면에서는 로고 글자를 빼고 심볼만 둡니다. */
+          .logo-text { display: none !important; }
+          /* 재생 화면 버튼이 한 글자씩 쪼개지지 않게 */
+          .player-actions button {
+            white-space: nowrap !important;
+            flex-shrink: 0 !important;
           }
           /* 숏츠는 탭 바 높이만큼 짧게 잡아야 잘리지 않습니다. */
           .shorts-stage {
             height: calc(100vh - 57px - 76px - env(safe-area-inset-bottom)) !important;
           }
+
+          /* 전체화면 중에는 아래 탭 바를 감춥니다. */
+          .bottom-tabs.hidden-on-fullscreen { display: none !important; }
 
           /* 작은 창은 탭 바 위에 놓습니다. */
           .mini-player {
