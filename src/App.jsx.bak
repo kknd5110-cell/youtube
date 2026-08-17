@@ -5673,27 +5673,18 @@ export default function App() {
           word-break: break-word;
         }
 
-        /* 이 두 줄은 반드시 html에만 겁니다. body에도 걸면 스크롤이 죽어요.
-           body에 overflow-x: hidden을 주면 브라우저가 세로 방향을 auto로 올려서
-           body 자체가 스크롤 상자가 됩니다. 그런데 body 높이는 내용과 같아서
-           안에서 굴릴 게 없고, 원래 부모(페이지)로 넘어가야 할 휠·터치 입력을
-           overscroll-behavior: none이 막아버립니다. 결국 아무 데도 안 굴러가요.
-           (크롬·안드로이드에서만 이렇게 동작하고 사파리는 멀쩡해서 찾기 어렵습니다.)
-           html에만 걸면 값이 화면 전체에 그대로 적용돼서 기능은 똑같습니다. */
-        html {
+        /* 아이폰 노치·홈바를 피해 안전 영역만큼 여백을 둡니다. */
+        html, body {
           /* 긴 제목·링크가 화면을 옆으로 밀어내지 않게 합니다.
              밀려나면 화면에 고정된 플레이어의 위치도 같이 어긋나요. */
           overflow-x: hidden;
-          /* 홈 화면 앱으로 열었을 때 화면 전체를 당겨 늘리지 않게 합니다. */
-          overscroll-behavior-y: none;
-        }
-        html, body {
           max-width: 100%;
         }
-        /* 아이폰 노치·홈바를 피해 안전 영역만큼 여백을 둡니다. */
         body {
           padding-bottom: env(safe-area-inset-bottom);
           background: #0E0D0B;
+          /* 홈 화면 앱으로 열었을 때 화면 전체를 당겨 늘리지 않게 합니다. */
+          overscroll-behavior-y: none;
         }
 
         /* 모바일에서 누를 때 생기는 파란 사각형과 글자 선택을 없앱니다. */
