@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Home, Bell, Play, ChevronLeft, ThumbsUp, Share2, Bookmark, Menu, X, Loader2, Zap, Volume2, VolumeX, ChevronUp, ChevronDown, MessageCircle, Users, Trash2, RotateCcw, Maximize2, Minimize2, RotateCw, Pause, Volume1, Subtitles, Gauge, SkipBack, SkipForward, Clock, ListPlus, ListVideo, Settings } from "lucide-react";
 
 // API 키는 서버(api/youtube.js)에만 있습니다. 이 파일에는 키가 들어가지 않아요.
@@ -2524,10 +2524,8 @@ function PlayerView({
   shared,
 }) {
 
-  // 다른 영상으로 넘어가면 맨 위로. 부드럽게(smooth) 굴리면 접기·펼치기
-  // 애니메이션과 움직임이 겹쳐서 오히려 버벅여 보여서 즉시 이동합니다.
   useEffect(() => {
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }, [v.videoId]);
 
   // 바로 복사하지 않고 확인 창을 거칩니다.
@@ -2874,12 +2872,6 @@ export default function App() {
   const dragYRef = useRef(0);
   const playerBoxRef = useRef(null);
   const dragRafRef = useRef(null);
-  // 화면 상태가 바뀌기 직전의 플레이어 위치·크기입니다. 전환 애니메이션의 출발점이에요.
-  const flipFromRef = useRef(null);
-  // 지금 돌아가고 있는 전환 애니메이션. 새 애니메이션을 걸기 전에 취소합니다.
-  const flipAnimRef = useRef(null);
-  // 목록에서 어디까지 내려봤는지. 영상을 접고 돌아올 때 그 자리로 되돌립니다.
-  const listScrollRef = useRef(0);
   // 유튜브 기본 전체화면 대신 우리가 직접 만든 전체화면입니다.
   // 기본 전체화면은 iframe이 터치를 다 가져가서 쓸어내리기를 감지할 수 없어요.
   const [fullscreen, setFullscreen] = useState(false);
@@ -3292,9 +3284,6 @@ export default function App() {
     if (Array.isArray(list) && list.length > 0) setQueue(list);
     else if (!queue.some((x) => x.videoId === v.videoId)) setQueue([v]);
 
-    // 목록에서 영상을 골랐다면, 돌아왔을 때 그 자리로 되돌아가도록 적어둡니다.
-    if (!(selected && !minimized && !openChannel)) listScrollRef.current = window.scrollY;
-
     // 이어볼 지점을 먼저 정합니다. 다 본 영상이면 0(처음부터)이 됩니다.
     setResumeAt(getResumeTime(v.videoId));
     playerTimeRef.current = { current: 0, duration: 0 };
@@ -3324,6 +3313,7 @@ export default function App() {
   const applyDragStyle = (y) => {
     const el = playerBoxRef.current;
     if (!el) return;
+    el.style.transition = "none";
     if (minimized) {
       el.style.transform =
         y > 0
@@ -3343,112 +3333,13 @@ export default function App() {
     }
   };
 
-  // 끌던 흔적을 애니메이션 없이 즉시 지웁니다.
-  const clearDragStyle = () => {
+  const resetDragStyle = () => {
     const el = playerBoxRef.current;
     if (!el) return;
-    el.style.transition = "";
+    el.style.transition = "transform 0.22s ease, opacity 0.22s ease";
     el.style.transform = "";
     el.style.opacity = "";
   };
-
-  // 문턱을 못 넘고 손을 뗐을 때, 원래 자리로 스르륵 돌아옵니다.
-  // CSS transition 대신 Web Animations를 쓰면 화면 합성기가 처리해서
-  // 자바스크립트가 바쁠 때도 애니메이션이 끊기지 않습니다.
-  const springBackDragStyle = () => {
-    const el = playerBoxRef.current;
-    if (!el) return;
-    const from = el.style.transform;
-    const fromOpacity = el.style.opacity || "1";
-    clearDragStyle();
-    if (!from) return;
-    flipAnimRef.current?.cancel();
-    flipAnimRef.current = el.animate(
-      [
-        { transform: from, opacity: fromOpacity },
-        { transform: "none", opacity: "1" },
-      ],
-      { duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
-    );
-  };
-
-  // 지금 눈에 보이는 플레이어 위치를 기억해 둡니다. 전환 애니메이션의 출발점이에요.
-  const captureFlipStart = () => {
-    const el = playerBoxRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0) flipFromRef.current = r;
-  };
-
-  // 작은 창 ↔ 펼침 ↔ 전체화면을 오갈 때는 항상 이 함수를 씁니다.
-  // 바뀌기 직전 위치를 기억해 두면 아래 useLayoutEffect가 그 자리에서
-  // 새 자리까지 자연스럽게 이어 붙여줍니다.
-  const changeView = (next) => {
-    // 목록이 보이는 동안에만 스크롤 위치가 의미 있습니다.
-    if (!(selected && !minimized && !openChannel)) listScrollRef.current = window.scrollY;
-    captureFlipStart();
-    clearDragStyle();
-    if (typeof next.minimized === "boolean") setMinimized(next.minimized);
-    if (typeof next.fullscreen === "boolean") setFullscreen(next.fullscreen);
-  };
-
-  // 목록을 보던 위치를 기억해 뒀다가, 영상을 접고 돌아올 때 그 자리로 되돌립니다.
-  // (아래 FLIP 효과보다 먼저 실행돼야 전환 애니메이션이 엉뚱한 자리에서 시작하지 않습니다.)
-  const expandedRef = useRef(false);
-  useLayoutEffect(() => {
-    const expanded = !!(selected && !minimized && !openChannel);
-    if (expanded === expandedRef.current) return;
-    expandedRef.current = expanded;
-    // 목록을 숨기는 순간 브라우저가 스크롤을 0으로 당겨버리기 때문에,
-    // 보던 위치는 화면을 바꾸기 전에(changeView·openVideo에서) 미리 적어둡니다.
-    if (expanded) {
-      window.scrollTo(0, 0);
-    } else {
-      // 목록이 다시 보이도록 바뀐 직후라 페이지 높이가 아직 반영이 안 돼 있습니다.
-      // 높이를 한 번 읽어 브라우저가 배치를 새로 계산하게 한 뒤에 되돌려야
-      // 스크롤이 맨 위로 잘려버리지 않습니다.
-      void document.documentElement.scrollHeight;
-      window.scrollTo(0, listScrollRef.current);
-    }
-  }, [selected, minimized, openChannel]);
-
-  // FLIP 방식: 이전 자리와 새 자리의 차이를 transform으로 되돌린 뒤 0으로 풀어줍니다.
-  // 위치·크기(top/left/width/height)를 직접 애니메이션하면 매 프레임 화면 배치를
-  // 다시 계산해서 버벅이는데, transform·opacity만 쓰면 그럴 일이 없습니다.
-  useLayoutEffect(() => {
-    const el = playerBoxRef.current;
-    const from = flipFromRef.current;
-    flipFromRef.current = null;
-    if (!el || !from) return;
-    // 세로 화면 전체보기는 90도 회전이 걸려 있어 건드리지 않습니다.
-    if (fullscreen && rotateFullscreen) return;
-
-    const to = el.getBoundingClientRect();
-    if (!to.width || !to.height || !from.width || !from.height) return;
-
-    const dx = from.left - to.left;
-    const dy = from.top - to.top;
-    const sx = from.width / to.width;
-    const sy = from.height / to.height;
-
-    // 거의 안 움직였으면 애니메이션할 것도 없습니다.
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) {
-      return;
-    }
-
-    flipAnimRef.current?.cancel();
-    flipAnimRef.current = el.animate(
-      [
-        {
-          transformOrigin: "top left",
-          transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
-        },
-        { transformOrigin: "top left", transform: "translate(0px, 0px) scale(1, 1)" },
-      ],
-      { duration: 280, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minimized, fullscreen, selected?.videoId]);
 
   const dragStart = (e) => {
     dragStartRef.current = e.clientY;
@@ -3483,24 +3374,20 @@ export default function App() {
 
     const y = dragYRef.current;
     dragYRef.current = 0;
+    resetDragStyle();
 
     // 전체화면 → 축소화면 → 앱 내 축소화면(작은 창) 순서로 한 단계씩 오르내립니다.
-    // 문턱을 넘었으면 changeView가 지금 끌려 있는 위치를 출발점으로 잡아
-    // 새 자리까지 끊김 없이 이어서 움직입니다.
     if (minimized) {
       // 작은 창: 위로 올리면 축소화면, 아래로 내리면 닫힘.
       if (y > 60) closePlayer();
-      else if (y < -50) changeView({ minimized: false });
-      else springBackDragStyle();
+      else if (y < -50) setMinimized(false);
     } else if (fullscreen) {
       // 전체화면: 아래로 내리면 축소화면.
-      if (y > 100) changeView({ fullscreen: false });
-      else springBackDragStyle();
+      if (y > 100) setFullscreen(false);
     } else {
       // 축소화면: 위로 올리면 전체화면, 아래로 내리면 작은 창.
-      if (y > 100) changeView({ minimized: true });
-      else if (y < -80) changeView({ fullscreen: true });
-      else springBackDragStyle();
+      if (y > 100) setMinimized(true);
+      else if (y < -80) setFullscreen(true);
     }
   };
 
@@ -3517,6 +3404,7 @@ export default function App() {
   useEffect(() => {
     dragYRef.current = 0;
     dragStartRef.current = null;
+    resetDragStyle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minimized, fullscreen, selected?.videoId]);
 
@@ -3557,7 +3445,7 @@ export default function App() {
     if (!query.trim()) return;
     setOpenChannel(null);
     // 보던 영상은 끄지 않고 작은 창으로 접습니다.
-    if (selected) changeView({ minimized: true });
+    if (selected) setMinimized(true);
     setActiveNav("홈");
     setCategory("전체");
     runSearch(query.trim(), searchOrder);
@@ -3565,7 +3453,7 @@ export default function App() {
 
   const handleCategoryClick = (c) => {
     setOpenChannel(null);
-    if (selected) changeView({ minimized: true });
+    if (selected) setMinimized(true);
     setActiveNav("홈");
     setCategory(c.label);
     if (c.id) runCategory(c.id);
@@ -3576,7 +3464,7 @@ export default function App() {
     setActiveNav(label);
     setNavOpen(false);
     // 탭을 옮겨도 보던 영상은 작은 창으로 남깁니다.
-    if (selected) changeView({ minimized: true });
+    if (selected) setMinimized(true);
     setOpenChannel(null);
     if (label === "숏츠") {
       setError(null);
@@ -3625,12 +3513,7 @@ export default function App() {
   };
 
   // 펼친 상태에서는 PlayerView가 잡아둔 자리에 플레이어를 겹쳐 놓습니다.
-  //
-  // 예전에는 화면(뷰포트) 기준 좌표를 써서, 스크롤할 때마다 자리를 다시 재고
-  // 상태를 바꿔 화면 전체를 다시 그렸습니다. 그래서 스크롤이 뚝뚝 끊겼어요.
-  // 이제는 문서(페이지) 기준 좌표로 한 번만 재두고 position:absolute로 놓습니다.
-  // 그러면 스크롤은 브라우저가 알아서 처리해서 자바스크립트가 전혀 끼어들지 않습니다.
-  // 팝업·분할 화면처럼 창 크기가 바뀔 때만 다시 잽니다.
+  // 팝업·분할 화면으로 바뀔 때 창 크기가 급변하므로 ResizeObserver로 즉시 따라갑니다.
   useEffect(() => {
     if (!selected || minimized || fullscreen) {
       return;
@@ -3645,39 +3528,36 @@ export default function App() {
         const r = el.getBoundingClientRect();
         // 자리를 아직 못 잡았으면(너비 0) 그리지 않습니다.
         if (r.width < 10) return;
-        // 스크롤한 만큼을 더해 문서 기준 좌표로 바꿉니다.
-        const top = r.top + window.scrollY;
-        const left = r.left + window.scrollX;
         // 값이 그대로면 상태를 갱신하지 않습니다. 갱신하면 다시 그려지고,
         // 그게 또 측정을 부르면서 무한 반복이 됩니다.
         setSlotRect((prev) => {
           if (
             prev &&
-            Math.abs(prev.top - top) < 0.5 &&
-            Math.abs(prev.left - left) < 0.5 &&
+            Math.abs(prev.top - r.top) < 0.5 &&
+            Math.abs(prev.left - r.left) < 0.5 &&
             Math.abs(prev.width - r.width) < 0.5 &&
             Math.abs(prev.height - r.height) < 0.5
           ) {
             return prev;
           }
-          return { top, left, width: r.width, height: r.height };
+          return { top: r.top, left: r.left, width: r.width, height: r.height };
         });
       });
     };
 
     measure();
 
-    // 자리 자체가 커지거나(창 크기 변경), 위쪽 내용이 늘어나 자리가 밀릴 때만 다시 잽니다.
     const ro = new ResizeObserver(measure);
     if (slotRef.current) ro.observe(slotRef.current);
-    if (slotRef.current?.parentElement) ro.observe(slotRef.current.parentElement);
 
+    window.addEventListener("scroll", measure, true);
     window.addEventListener("resize", measure);
     window.addEventListener("orientationchange", measure);
 
     return () => {
       if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
+      window.removeEventListener("scroll", measure, true);
       window.removeEventListener("resize", measure);
       window.removeEventListener("orientationchange", measure);
     };
@@ -4079,7 +3959,6 @@ export default function App() {
     fullscreen,
     source,
     handleNavClick,
-    changeView,
     goHome: () => {
       setQuery("");
       setCategory("전체");
@@ -4104,10 +3983,10 @@ export default function App() {
         setOpenChannel(null);
       } else if (state.fullscreen) {
         // 전체화면 → 축소화면
-        state.changeView({ fullscreen: false });
+        setFullscreen(false);
       } else if (state.selected && !state.minimized) {
         // 축소화면 → 작은 창
-        state.changeView({ minimized: true });
+        setMinimized(true);
       } else if (state.selected) {
         // 작은 창 → 닫기
         closePlayer();
@@ -4254,10 +4133,8 @@ export default function App() {
           alignItems: "center",
           gap: 16,
           padding: "14px 24px",
-          // 반투명 + 흐림(backdrop-filter)은 스크롤할 때마다 상단 바 뒤쪽을
-          // 매번 다시 칠해야 해서 태블릿에서 특히 무겁습니다.
-          // 어차피 92% 불투명이라 흐림 효과는 거의 안 보였어요. 불투명으로 바꿉니다.
-          background: "#0E0D0B",
+          background: "rgba(14,13,11,0.92)",
+          backdropFilter: "blur(8px)",
           borderBottom: "1px solid #231F19",
         }}
       >
@@ -4656,14 +4533,12 @@ export default function App() {
                 onTopicSignal={bumpTopicScore}
               />
             )
-          ) : (
-            <>
-            {selected && !minimized && (
+          ) : selected && !minimized ? (
             <PlayerView
               v={selected}
               related={related}
-              onBack={() => changeView({ minimized: true })}
-              onMinimize={() => changeView({ minimized: true })}
+              onBack={() => setMinimized(true)}
+              onMinimize={() => setMinimized(true)}
               slotRef={slotRef}
               seekTo={seekTo}
               dragHandlers={dragHandlers}
@@ -4688,18 +4563,8 @@ export default function App() {
                 }
               }}
             />
-            )}
-
-            {/* 목록은 영상을 펼쳐도 지우지 않고 숨기기만 합니다.
-                지웠다가 다시 만들면 카드 수십 개를 새로 그리느라
-                접기·펼치기 애니메이션 첫 순간이 뚝 끊겨요. */}
-            <div
-              className="page-pad"
-              style={{
-                padding: "20px 28px 60px",
-                display: selected && !minimized ? "none" : undefined,
-              }}
-            >
+          ) : (
+            <div className="page-pad" style={{ padding: "20px 28px 60px" }}>
               {activeNav === "기록" ? (
                 <div
                   style={{
@@ -5108,7 +4973,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            </>
           )}
         </div>
       </div>
@@ -5118,7 +4982,7 @@ export default function App() {
       {selected && (minimized || fullscreen || slotRect) && (
         <div
           ref={playerBoxRef}
-          className={minimized ? "player-box mini-player" : "player-box"}
+          className={minimized ? "mini-player" : undefined}
           onPointerMove={() => {
             // 끌고 있는 중이거나 이미 보이는 중이면 아무것도 하지 않습니다.
             if (dragStartRef.current != null || controlsShown) return;
@@ -5139,6 +5003,7 @@ export default function App() {
                   zIndex: 90,
                   overflow: "hidden",
                   transform: rotateFullscreen ? "translate(-50%, -50%) rotate(90deg)" : undefined,
+                  transition: "transform 0.22s ease, opacity 0.22s ease",
                 }
               : minimized
               ? {
@@ -5158,10 +5023,11 @@ export default function App() {
                   boxShadow: "0 12px 40px rgba(0,0,0,0.65)",
                   border: "1px solid #2C271F",
                   zIndex: 70,
+                  // 아래로 끌면 따라 내려가며 흐려지고, 놓으면 닫힙니다.
+                  transition: "transform 0.2s ease, opacity 0.2s ease",
                 }
               : {
-                  // 문서 기준 좌표라서 스크롤은 브라우저가 알아서 처리합니다.
-                  position: "absolute",
+                  position: "fixed",
                   top: slotRect.top,
                   left: slotRect.left,
                   width: slotRect.width,
@@ -5169,9 +5035,9 @@ export default function App() {
                   borderRadius: 12,
                   overflow: "hidden",
                   background: "#000",
-                  // 상단 바(20)보다 낮게 둬서 스크롤하면 상단 바 아래로 지나갑니다.
-                  zIndex: 15,
+                  zIndex: 20,
                   transformOrigin: "center",
+                  transition: "transform 0.22s ease, opacity 0.22s ease",
                 }
           }
         >
@@ -5451,7 +5317,7 @@ export default function App() {
               onCaptions={toggleCaptions}
               onShare={sharePlaying}
               shared={playerShared}
-              onFullscreen={() => changeView({ fullscreen: !fullscreen })}
+              onFullscreen={() => setFullscreen((f) => !f)}
               onPrev={goPrev}
               onNext={goNext}
               hasPrev={!!prevVideo}
@@ -5471,7 +5337,7 @@ export default function App() {
                 onClick={() => {
                   // 끌었을 때는 펼치지 않습니다.
                   if (dragMovedRef.current) return;
-                  changeView({ minimized: false });
+                  setMinimized(false);
                 }}
                 style={{ position: "absolute", inset: 0, cursor: "pointer", touchAction: "none" }}
               />
@@ -5912,14 +5778,6 @@ export default function App() {
             right: 12px !important;
           }
         }
-        /* 화면 밖으로 나간 카드는 그리지 않습니다. 목록이 길어져도 스크롤이 가벼워요.
-           contain-intrinsic-size로 예상 높이를 알려줘야 스크롤 막대가 튀지 않습니다. */
-        .video-grid > * {
-          content-visibility: auto;
-          contain-intrinsic-size: auto 260px;
-        }
-        /* 플레이어는 계속 움직이는 요소라 미리 별도 레이어로 올려둡니다. */
-        .player-box { will-change: transform; }
         ::-webkit-scrollbar { height: 6px; width: 8px; }
         ::-webkit-scrollbar-thumb { background: #2C271F; border-radius: 4px; }
         .spin { animation: spin 1s linear infinite; }
