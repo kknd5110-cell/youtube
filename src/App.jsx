@@ -5921,12 +5921,6 @@ export default function App() {
             right: 12px !important;
           }
         }
-        /* 화면 밖으로 나간 카드는 그리지 않습니다. 목록이 길어져도 스크롤이 가벼워요.
-           contain-intrinsic-size로 예상 높이를 알려줘야 스크롤 막대가 튀지 않습니다. */
-        .video-grid > * {
-          content-visibility: auto;
-          contain-intrinsic-size: auto 260px;
-        }
         /* 플레이어는 계속 움직이는 요소라 미리 별도 레이어로 올려둡니다. */
         .player-box { will-change: transform; }
         ::-webkit-scrollbar { height: 6px; width: 8px; }
