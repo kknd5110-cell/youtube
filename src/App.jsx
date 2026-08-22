@@ -43,7 +43,9 @@ const CATEGORIES = [
   { label: "예능", id: "24" },
   { label: "브이로그", id: "22" },
   { label: "스포츠", id: "17" },
-  { label: "여행", id: "19" },
+  // 여행(19)은 뺐습니다. 유튜브 인기 급상승 API가 한국 지역에서 이 카테고리를
+  // 지원하지 않아 요청하면 오류가 납니다. 칸을 누르면 에러가 나는 건 물론이고,
+  // 홈이 카테고리 두 개를 무작위로 뽑아 쓰기 때문에 홈까지 부실해졌어요.
   { label: "테크", id: "28" },
   { label: "요리", id: "26" },
   { label: "동물", id: "15" },
@@ -53,10 +55,65 @@ const CATEGORIES = [
 // 연결 끊김을 감지하려고 같이 재생하는 아주 짧은 무음 소리입니다.
 const SILENT_SOUND = "data:audio/wav;base64,UklGRgQCAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YeABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIA=";
 
+// 컨트롤 바 위에 뜨는 작은 메뉴의 공통 모양
+const menuBoxStyle = {
+  animation: "riseIn 200ms cubic-bezier(0.22, 0.61, 0.36, 1) both",
+  position: "absolute",
+  bottom: 44,
+  right: 0,
+  background: "#141210",
+  border: "1px solid #2C271F",
+  borderRadius: 10,
+  padding: 6,
+  minWidth: 118,
+  maxHeight: 260,
+  overflowY: "auto",
+  boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+  zIndex: 6,
+};
+
+const menuItemStyle = (active) => ({
+  display: "block",
+  width: "100%",
+  background: active ? "#2C271F" : "none",
+  border: "none",
+  borderRadius: 6,
+  color: active ? "#E8A33D" : "#F2EDE4",
+  padding: "7px 10px",
+  fontSize: 12.5,
+  textAlign: "left",
+  cursor: "pointer",
+  fontFamily: "'Inter', sans-serif",
+  whiteSpace: "nowrap",
+});
+
+// ── 움직임 기준 ────────────────────────────────────────────
+// 앱 전체가 같은 속도·곡선으로 움직이도록 한곳에 모아둡니다.
+// cubic-bezier는 처음에 빠르게 나가고 끝에서 부드럽게 멈추는 곡선이에요.
+const EASE = "cubic-bezier(0.22, 0.61, 0.36, 1)";
+const MOTION = {
+  // 버튼 색·투명도처럼 작은 변화
+  fast: `120ms ${EASE}`,
+  // 카드가 떠오르거나 메뉴가 열리는 정도
+  base: `220ms ${EASE}`,
+  // 플레이어가 접히고 펼쳐지는 큰 움직임
+  slow: `320ms ${EASE}`,
+};
+
 const AVATAR_COLORS = ["#E8A33D", "#4A7A6B", "#B85C4F", "#8C7A5E", "#5C7A9E", "#9E5C8F"];
 
 // localStorage 읽기/쓰기. 브라우저 설정에 따라 접근이 막힐 수 있어서 항상 try로 감쌉니다.
+// 같은 값을 반복해서 읽을 때 JSON 해석을 건너뛰기 위한 캐시입니다.
+const storeCache = new Map();
+
 function loadStore(key, fallback) {
+  if (storeCache.has(key)) return storeCache.get(key);
+  const value = loadStoreRaw(key, fallback);
+  storeCache.set(key, value);
+  return value;
+}
+
+function loadStoreRaw(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
@@ -66,6 +123,7 @@ function loadStore(key, fallback) {
 }
 
 function saveStore(key, value) {
+  storeCache.set(key, value);
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (e) {
@@ -288,9 +346,11 @@ async function searchYoutube(query, pageToken = "", onPartial, order = "relevanc
   const unique = raw.filter((it) => it.id?.videoId && !seen.has(it.id.videoId) && seen.add(it.id.videoId));
   if (unique.length === 0) return { items: [], nextPageToken };
 
-  // 관련순은 매번 같은 순서로 나와서 지루합니다. 그때만 섞어줍니다.
-  // 인기순·최신순은 순서가 곧 의미라 그대로 둡니다.
-  const arrange = (list) => (order === "relevance" ? shuffle(list) : list);
+  // 검색 결과는 절대 섞지 않습니다.
+  // 관련순은 유튜브가 "이게 제일 잘 맞는다"고 정해서 보내주는 순서예요.
+  // 예전에는 지루하지 말라고 여기서 섞었는데, 그러면 정확히 찾던 영상이
+  // 뒤로 밀려나서 "검색이 안 된다"처럼 보입니다. 순서가 곧 답입니다.
+  const arrange = (list) => list;
 
   // 1단계: 재생시간·조회수 없이 먼저 그립니다.
   if (onPartial) {
@@ -337,6 +397,38 @@ async function fetchVideoDetails(ids) {
 // 채널의 업로드 재생목록에서 최근 영상을 가져옵니다.
 // search.list(100유닛) 대신 playlistItems.list(1유닛)를 쓰기 때문에 훨씬 저렴합니다.
 // 채널의 업로드 목록. pageToken을 넘기면 다음 장을 이어서 받습니다.
+// 채널 영상을 조회수 높은 순으로 가져옵니다.
+// 업로드 재생목록은 올린 순서대로만 주기 때문에 인기순은 검색으로 받아야 합니다.
+// 검색은 한 번에 100유닛이라 업로드 목록(2유닛)보다 훨씬 비쌉니다. 그래서 1시간 담아둡니다.
+async function fetchChannelVideosPopular(channelId, pageToken = "") {
+  return withCache(
+    `loop:channelpop:${channelId}:${pageToken}`,
+    async () => {
+      const data = await ytFetch("search", {
+        part: "snippet",
+        channelId,
+        order: "viewCount",
+        type: "video",
+        maxResults: "50",
+        ...(pageToken ? { pageToken } : {}),
+      });
+
+      const items = (data.items || []).filter((it) => it.id?.videoId);
+      if (items.length === 0) return { items: [], nextPageToken: null };
+
+      const ids = items.map((it) => it.id.videoId);
+      const detailsById = await fetchVideoDetails(ids);
+      return {
+        items: items
+          .filter((it) => detailsById[it.id.videoId])
+          .map((it) => toVideo(it.snippet, detailsById[it.id.videoId], it.id.videoId)),
+        nextPageToken: data.nextPageToken || null,
+      };
+    },
+    60 * 60 * 1000
+  );
+}
+
 async function fetchChannelVideos(channelId, pageToken = "") {
   const res = await withCache(
     `loop:channel:${channelId}:${pageToken}`,
@@ -493,7 +585,8 @@ function addHistory(video) {
     seconds: video.seconds,
     views: video.views,
     publishedAt: video.publishedAt,
-    time: video.time,
+    // "4일 전" 같은 문자열은 저장하지 않습니다. 저장하면 시간이 지나도
+    // 그대로 남아서 한 달 뒤에도 "4일 전"이라고 뜹니다.
     at: Date.now(),
   };
   saveStore(HISTORY_KEY, [entry, ...prev].slice(0, HISTORY_LIMIT));
@@ -501,6 +594,174 @@ function addHistory(video) {
 
 function clearHistory() {
   saveStore(HISTORY_KEY, []);
+}
+
+// 저장된 기록을 화면에 쓸 형태로 되살립니다. 업로드 시점은 지금 기준으로 다시 계산해요.
+function historyForDisplay() {
+  return loadHistory().map((v) => ({
+    ...v,
+    // 기록 탭에서 궁금한 건 "영상이 언제 올라왔나"가 아니라 "내가 언제 봤나"입니다.
+    // 볼 때 찍어둔 시각(at)이 있으면 그걸 보여주고, 없는 옛 기록만 업로드 날짜로 대신합니다.
+    time: v.at
+      ? `${formatRelativeTime(v.at).replace(" 전", "")} 전에 봄`
+      : v.publishedAt
+      ? formatRelativeTime(v.publishedAt)
+      : "",
+  }));
+}
+
+// ── 관심 없음 ──────────────────────────────────────────────
+// 이 채널·영상은 홈에서 빼달라는 표시입니다.
+const MUTED_KEY = "loop:muted";
+
+function loadMuted() {
+  const m = loadStore(MUTED_KEY, { channels: [], videos: [] });
+  return { channels: m.channels || [], videos: m.videos || [] };
+}
+
+function muteChannel(channelId) {
+  if (!channelId) return;
+  const m = loadMuted();
+  if (!m.channels.includes(channelId)) m.channels.push(channelId);
+  saveStore(MUTED_KEY, m);
+}
+
+function muteVideo(videoId) {
+  if (!videoId) return;
+  const m = loadMuted();
+  if (!m.videos.includes(videoId)) m.videos.push(videoId);
+  // 너무 쌓이지 않게 최근 300개만 남깁니다.
+  m.videos = m.videos.slice(-300);
+  saveStore(MUTED_KEY, m);
+}
+
+function clearMuted() {
+  saveStore(MUTED_KEY, { channels: [], videos: [] });
+}
+
+// ── 취향 요약 ──────────────────────────────────────────────
+// 시청 기록에서 "어떤 채널을, 어떤 길이로, 얼마나 끝까지 보는지"를 뽑아냅니다.
+// 점수를 매길 때마다 다시 계산하면 느리니 한 번 만들어 재사용합니다.
+function buildTaste() {
+  const history = loadHistory().slice(0, 80);
+  const progress = getProgressMap();
+  const scores = loadTopicScores();
+
+  const channelHits = new Map();
+  const channelFinish = new Map();
+  let durSum = 0;
+  let durCount = 0;
+
+  history.forEach((v) => {
+    if (v.channelId) {
+      channelHits.set(v.channelId, (channelHits.get(v.channelId) || 0) + 1);
+      const p = progress[v.videoId];
+      if (p?.d) {
+        const ratio = Math.min(1, p.s / p.d);
+        const prev = channelFinish.get(v.channelId) || { sum: 0, n: 0 };
+        channelFinish.set(v.channelId, { sum: prev.sum + ratio, n: prev.n + 1 });
+      }
+    }
+    // 30초도 안 본 영상은 취향으로 치지 않습니다.
+    const p = progress[v.videoId];
+    if (v.seconds && p && p.s > 30) {
+      durSum += v.seconds;
+      durCount += 1;
+    }
+  });
+
+  return {
+    channelHits,
+    channelFinish,
+    // 즐겨 보는 영상 길이(초). 기록이 적으면 기준을 두지 않습니다.
+    preferredSeconds: durCount >= 5 ? durSum / durCount : null,
+    topicScores: scores,
+    muted: loadMuted(),
+  };
+}
+
+// 영상 하나에 점수를 매깁니다. 높을수록 앞에 옵니다.
+function scoreVideo(v, taste, subscribedIds) {
+  let score = 0;
+
+  // 1) 채널 친밀도 — 최근에 자주 본 채널일수록 높게
+  const hits = taste.channelHits.get(v.channelId) || 0;
+  score += Math.min(6, hits * 1.5);
+
+  // 2) 구독한 채널은 확실히 올려줍니다
+  if (subscribedIds.includes(v.channelId)) score += 4;
+
+  // 3) 완주율 — 그 채널 영상을 끝까지 보는 편이면 가산
+  const fin = taste.channelFinish.get(v.channelId);
+  if (fin && fin.n > 0) score += (fin.sum / fin.n) * 3;
+
+  // 4) 카테고리 취향 (숏츠에서 쌓은 점수를 함께 씁니다)
+  const catLabel = CATEGORIES.find((c) => c.id === v.categoryId)?.label;
+  if (catLabel && taste.topicScores[catLabel]) {
+    score += Math.max(-3, Math.min(3, taste.topicScores[catLabel]));
+  }
+
+  // 5) 길이 취향 — 즐겨 보는 길이와 가까울수록 가산
+  if (taste.preferredSeconds && v.seconds) {
+    const ratio = v.seconds / taste.preferredSeconds;
+    // 0.5~2배 사이면 가산, 많이 벗어나면 0에 가까워집니다.
+    score += ratio > 0.4 && ratio < 2.5 ? 2 : 0;
+  }
+
+  // 6) 신선도 — 최근에 올라온 영상 우대
+  if (v.publishedAt) {
+    const days = (Date.now() - new Date(v.publishedAt).getTime()) / 86400000;
+    if (days < 1) score += 3;
+    else if (days < 3) score += 2;
+    else if (days < 7) score += 1;
+    else if (days > 365) score -= 1;
+  }
+
+  // 7) 이미 본 영상은 감점 (많이 봤을수록 크게)
+  const watched = getProgress(v.videoId);
+  if (watched > 0.85) score -= 8;
+  else if (watched > 0.1) score -= 2;
+
+  // 8) 열자마자 껐던 영상은 취향이 아니었다는 뜻
+  const p = getProgressMap()[v.videoId];
+  if (p && p.s < 15 && p.d > 120) score -= 3;
+
+  // 살짝 흔들어 매번 같은 순서가 되지 않게 합니다.
+  score += Math.random() * 1.5;
+  return score;
+}
+
+// 점수순으로 정렬하되, 한 채널이 화면을 독차지하지 않게 제한합니다.
+function rankVideos(list, taste, subscribedIds, maxPerChannel = 2) {
+  const scored = list
+    .filter((v) => {
+      if (taste.muted.channels.includes(v.channelId)) return false;
+      if (taste.muted.videos.includes(v.videoId)) return false;
+      return true;
+    })
+    // 점수에 작은 흔들림을 더합니다.
+    // 점수만으로 세우면 후보가 같은 동안 홈이 늘 똑같은 순서로 나옵니다.
+    // 흔들림 폭(3점)이 취향 신호(구독 +4, 자주 본 채널 +6)보다 작아서
+    // 좋아하는 것이 밀려나지는 않고, 비슷한 점수끼리만 자리를 바꿉니다.
+    .map((v) => ({ v, score: scoreVideo(v, taste, subscribedIds) + Math.random() * 3 }))
+    .sort((a, b) => b.score - a.score);
+
+  const perChannel = new Map();
+  const picked = [];
+  const held = [];
+
+  scored.forEach(({ v }) => {
+    const n = perChannel.get(v.channelId) || 0;
+    if (n >= maxPerChannel) {
+      held.push(v);
+      return;
+    }
+    perChannel.set(v.channelId, n + 1);
+    picked.push(v);
+  });
+
+  // 제한에 걸려 빠진 것들은 맨 뒤에 붙입니다.
+  return [...picked, ...held];
 }
 
 // 최근 본 영상에서 자주 등장한 채널을 뽑습니다. 홈 추천에 씁니다.
@@ -743,6 +1004,32 @@ function splitTimestamps(text) {
   }
   if (last < text.length) parts.push({ type: "text", value: text.slice(last) });
   return parts;
+}
+
+// 설명글 안의 주소를 눌러서 열 수 있게 바꿉니다.
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+
+function LinkedText({ text }) {
+  const parts = String(text || "").split(URL_RE);
+  return (
+    <>
+      {parts.map((part, i) =>
+        URL_RE.test(part) && part.startsWith("http") ? (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "#E8A33D", textDecoration: "none", overflowWrap: "anywhere" }}
+          >
+            {part}
+          </a>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
 }
 
 function CommentText({ text, onSeek }) {
@@ -1001,9 +1288,14 @@ async function fetchHome(subscribedIds = []) {
   }
   buckets.push(dedupe(general.items), dedupe(catA.items), dedupe(catB.items));
 
+  // 후보를 한데 모은 뒤 영상 하나하나에 점수를 매겨 줄을 세웁니다.
+  // 예전처럼 "출처 덩어리"를 번갈아 놓는 게 아니라, 취향에 맞는 순서로 정렬돼요.
+  const candidates = buckets.flat();
+  const taste = buildTaste();
+  const ranked = rankVideos(tidyForHome(candidates, 0), taste, subscribedIds);
+
   return {
-    // 다 본 영상은 홈에서 빼줍니다.
-    items: tidyForHome(withoutWatched(interleave(buckets))),
+    items: ranked,
     nextPageToken: general.nextPageToken,
   };
 }
@@ -1058,11 +1350,15 @@ function Thumb({ v, big }) {
             width: big ? 56 : 38,
             height: big ? 56 : 38,
             borderRadius: "50%",
-            background: "rgba(15,13,10,0.45)",
+            // 예전에는 여기에 backdrop-filter: blur(2px)가 있었습니다.
+            // 카드마다 하나씩이라 목록에 24개가 깔리는데, 흐림 효과는 화면 뒤쪽을
+            // 매번 다시 계산해야 해서 태블릿·휴대폰 GPU에 특히 무겁습니다.
+            // 지름 38px 원에 2px 흐림은 눈에 거의 안 보였기 때문에,
+            // 배경을 조금 더 진하게 하는 것으로 대신합니다.
+            background: "rgba(15,13,10,0.58)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            backdropFilter: "blur(2px)",
           }}
         >
           <Play size={big ? 24 : 16} color="#F2EDE4" fill="#F2EDE4" style={{ marginLeft: 2 }} />
@@ -1151,16 +1447,103 @@ function Avatar({ v, avatars, size }) {
 // 영상 카드는 목록마다 수십 개라, 데이터가 그대로면 다시 그리지 않습니다.
 // (클릭 함수는 매번 새로 만들어지므로 비교에서 제외합니다.)
 const VideoCard = React.memo(
-  function VideoCard({ v, onClick, avatars, onOpenChannel }) {
+  function VideoCard({ v, onClick, avatars, onOpenChannel, onMute }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const [hover, setHover] = useState(false);
   return (
     <div
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{ cursor: "pointer", transform: hover ? "translateY(-3px)" : "none", transition: "transform 0.2s ease" }}
+      style={{
+        cursor: "pointer",
+        transform: hover ? "translateY(-4px)" : "translateY(0)",
+        transition: `transform ${MOTION.base}`,
+        // 브라우저에 미리 알려주면 움직임이 더 매끄럽습니다.
+        willChange: "transform",
+        position: "relative",
+      }}
     >
       <Thumb v={v} />
+
+      {/* 관심 없음. 이 영상·채널을 홈에서 빼달라고 알려주는 버튼입니다. */}
+      {onMute && (
+        <div style={{ position: "absolute", top: 6, right: 6, zIndex: 3 }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((o) => !o);
+            }}
+            title="관심 없음"
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: "50%",
+              background: "rgba(10,9,8,0.75)",
+              border: "none",
+              color: "#F2EDE4",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              opacity: hover || menuOpen ? 1 : 0.35,
+              transition: `opacity ${MOTION.fast}`,
+            }}
+          >
+            <X size={14} />
+          </button>
+
+          {menuOpen && (
+            <>
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                }}
+                style={{ position: "fixed", inset: 0, zIndex: 40 }}
+              />
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  top: 32,
+                  right: 0,
+                  zIndex: 41,
+                  background: "#141210",
+                  border: "1px solid #2C271F",
+                  borderRadius: 10,
+                  padding: 6,
+                  minWidth: 150,
+                  boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+                }}
+              >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMute("video", v);
+                    setMenuOpen(false);
+                  }}
+                  style={menuItemStyle(false)}
+                >
+                  이 영상 숨기기
+                </button>
+                {v.channelId && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMute("channel", v);
+                      setMenuOpen(false);
+                    }}
+                    style={menuItemStyle(false)}
+                  >
+                    이 채널 추천 안 함
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
         <div
           onClick={(e) => {
@@ -1182,7 +1565,7 @@ const VideoCard = React.memo(
               fontFamily: "'Fraunces', serif",
               fontSize: 14.5,
               lineHeight: 1.35,
-              fontWeight: 500,
+              fontWeight: 600,
               overflow: "hidden",
               textOverflow: "ellipsis",
               display: "-webkit-box",
@@ -1219,8 +1602,7 @@ const VideoCard = React.memo(
               color: "#8C8578",
               fontSize: 12,
               marginTop: 2,
-              fontFamily: "'IBM Plex Mono', monospace",
-              letterSpacing: 0.2,
+              fontFamily: "'Inter', sans-serif",
             }}
           >
             {v.views ? `조회수 ${v.views}회 · ${v.time}` : v.time}
@@ -1300,7 +1682,7 @@ function Replies({ commentId, count, onSeek }) {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
                     <span style={{ color: "#F2EDE4", fontSize: 11.5, fontWeight: 600 }}>{r.author}</span>
-                    <span style={{ color: "#5C574C", fontSize: 10.5, fontFamily: "'IBM Plex Mono', monospace" }}>{r.time}</span>
+                    <span style={{ color: "#5C574C", fontSize: 10.5, fontFamily: "'Inter', sans-serif" }}>{r.time}</span>
                   </div>
                   <div style={{ color: "#D6D0C4", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                     <CommentText text={r.text} onSeek={onSeek} />
@@ -1371,26 +1753,8 @@ const CommentList = React.memo(
     }
   }, [videoId, token, loadingMore, loading]);
 
-  loadMoreRef.current = loadMore;
-
-  // 목록 끝이 보이면 다음 장을 이어붙입니다.
-  // 요소가 붙고 떨어질 때마다 감시를 새로 걸어야 놓치지 않습니다.
-  const sentinelRef = useCallback((node) => {
-    if (observerRef.current) {
-      observerRef.current.disconnect();
-      observerRef.current = null;
-    }
-    if (!node) return;
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) loadMoreRef.current?.();
-      },
-      { rootMargin: "200px" }
-    );
-    observerRef.current.observe(node);
-  }, []);
-
-  useEffect(() => () => observerRef.current?.disconnect(), []);
+  // 댓글은 스크롤로 자동 로딩하지 않습니다.
+  // 영상을 보다가 아래로 내렸을 뿐인데 계속 불러오면 방해가 되니까요.
 
   if (loading) {
     return (
@@ -1419,7 +1783,7 @@ const CommentList = React.memo(
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
               <span style={{ color: "#F2EDE4", fontSize: 12.5, fontWeight: 600 }}>{c.author}</span>
-              <span style={{ color: "#5C574C", fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace" }}>{c.time}</span>
+              <span style={{ color: "#5C574C", fontSize: 11.5, fontFamily: "'Inter', sans-serif" }}>{c.time}</span>
             </div>
             <div
               className="selectable"
@@ -1439,16 +1803,41 @@ const CommentList = React.memo(
         </div>
       ))}
 
-      <div ref={sentinelRef} style={{ height: 1 }} />
-
-      {loadingMore && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#8C8578", padding: "12px 0", fontSize: 12.5 }}>
-          <Loader2 size={14} className="spin" /> 댓글 더 불러오는 중…
-        </div>
+      {token && (
+        <button
+          onClick={loadMore}
+          disabled={loadingMore}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 7,
+            width: "100%",
+            marginTop: 6,
+            background: "#231F19",
+            border: "none",
+            borderRadius: 10,
+            color: "#B8B2A4",
+            padding: "12px 0",
+            fontSize: 12.5,
+            cursor: loadingMore ? "default" : "pointer",
+            fontFamily: "'Inter', sans-serif",
+          }}
+        >
+          {loadingMore ? (
+            <>
+              <Loader2 size={14} className="spin" /> 불러오는 중…
+            </>
+          ) : (
+            <>
+              <ChevronDown size={15} /> 댓글 더 보기
+            </>
+          )}
+        </button>
       )}
 
-      {!loadingMore && !token && (
-        <div style={{ textAlign: "center", color: "#3A342C", padding: "12px 0", fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace" }}>
+      {!token && items.length > 0 && (
+        <div style={{ textAlign: "center", color: "#3A342C", padding: "12px 0", fontSize: 11.5, fontFamily: "'Inter', sans-serif" }}>
           댓글 끝
         </div>
       )}
@@ -1584,6 +1973,8 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
           overflowY: "auto",
           scrollSnapType: "y mandatory",
           WebkitOverflowScrolling: "touch",
+          // 부드럽게 미끄러지도록
+          scrollBehavior: "smooth",
         }}
       >
         {items.map((v, i) => {
@@ -1730,7 +2121,7 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
                   >
                     {v.title}
                   </div>
-                  <div style={{ color: "#B8B2A4", fontSize: 12, marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" }}>
+                  <div style={{ color: "#B8B2A4", fontSize: 12, marginTop: 6, fontFamily: "'Inter', sans-serif" }}>
                     {v.views ? `조회수 ${v.views}회` : ""}
                     {v.views && v.dur ? " · " : ""}
                     {v.dur || ""}
@@ -1860,7 +2251,7 @@ function ShortsView({ items, index, setIndex, onExit, avatars, likes, onToggleLi
         }}
       >
         {index + 1} / {items.length}
-        {loadingMore && " · 불러오는 중"}
+        {loadingMore && <span style={{ fontFamily: "'Inter', sans-serif" }}> · 불러오는 중</span>}
       </div>
     </div>
   );
@@ -1931,7 +2322,13 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
   const [bannerFailed, setBannerFailed] = useState(false);
   const [pageToken, setPageToken] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // 최신순(업로드 순서) / 인기순(조회수 순)
+  const [sort, setSort] = useState("latest");
   const sentinelRef = useRef(null);
+
+  // 정렬에 맞는 불러오기 함수를 골라 씁니다.
+  const fetchPage = (token) =>
+    sort === "popular" ? fetchChannelVideosPopular(channelId, token) : fetchChannelVideos(channelId, token);
 
   useEffect(() => {
     let cancelled = false;
@@ -1945,7 +2342,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
     setPageToken(null);
     Promise.all([
       fetchChannelInfo(channelId),
-      fetchChannelVideos(channelId).catch(() => ({ items: [], nextPageToken: null })),
+      fetchPage("").catch(() => ({ items: [], nextPageToken: null })),
     ])
       .then(([channelInfo, page]) => {
         if (cancelled) return;
@@ -1967,7 +2364,8 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
     return () => {
       cancelled = true;
     };
-  }, [channelId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, sort]);
 
   // 목록 끝이 보이면 다음 장을 이어붙입니다.
   useEffect(() => {
@@ -1977,7 +2375,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
       (entries) => {
         if (!entries[0].isIntersecting) return;
         setLoadingMore(true);
-        fetchChannelVideos(channelId, pageToken)
+        fetchPage(pageToken)
           .then((page) => {
             setVideos((prev) => {
               const seen = new Set(prev.map((v) => v.videoId));
@@ -2067,7 +2465,7 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
               color: "#8C8578",
               fontSize: 12.5,
               marginTop: 6,
-              fontFamily: "'IBM Plex Mono', monospace",
+              fontFamily: "'Inter', sans-serif",
               display: "flex",
               gap: 12,
               flexWrap: "wrap",
@@ -2133,6 +2531,33 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
         }}
       >
         영상
+        <span style={{ display: "inline-flex", gap: 6, marginLeft: 14, verticalAlign: "middle" }}>
+          {[
+            { key: "latest", label: "최신순" },
+            { key: "popular", label: "인기순" },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => {
+                if (sort === key) return;
+                setSort(key);
+              }}
+              style={{
+                border: "1px solid " + (sort === key ? "#E8A33D" : "#2C271F"),
+                background: sort === key ? "#E8A33D" : "transparent",
+                color: sort === key ? "#17140F" : "#B8B2A4",
+                borderRadius: 16,
+                padding: "5px 13px",
+                fontSize: 12.5,
+                fontWeight: 500,
+                fontFamily: "'Inter', sans-serif",
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
       </div>
 
       {videos.length === 0 ? (
@@ -2160,44 +2585,13 @@ function ChannelView({ channelId, onBack, onSelect, subscribed, onToggleSub, ava
       )}
 
       {!loadingMore && !pageToken && videos.length > 0 && (
-        <div style={{ textAlign: "center", color: "#3A342C", padding: "24px 0", fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace" }}>
+        <div style={{ textAlign: "center", color: "#3A342C", padding: "24px 0", fontSize: 11.5, fontFamily: "'Inter', sans-serif" }}>
           마지막 영상이에요
         </div>
       )}
     </div>
   );
 }
-
-// 컨트롤 바 위에 뜨는 작은 메뉴의 공통 모양
-const menuBoxStyle = {
-  position: "absolute",
-  bottom: 44,
-  right: 0,
-  background: "#141210",
-  border: "1px solid #2C271F",
-  borderRadius: 10,
-  padding: 6,
-  minWidth: 118,
-  maxHeight: 260,
-  overflowY: "auto",
-  boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
-  zIndex: 6,
-};
-
-const menuItemStyle = (active) => ({
-  display: "block",
-  width: "100%",
-  background: active ? "#2C271F" : "none",
-  border: "none",
-  borderRadius: 6,
-  color: active ? "#E8A33D" : "#F2EDE4",
-  padding: "7px 10px",
-  fontSize: 12.5,
-  textAlign: "left",
-  cursor: "pointer",
-  fontFamily: "'Inter', sans-serif",
-  whiteSpace: "nowrap",
-});
 
 // 직접 만든 플레이어 컨트롤. 유튜브 기본 컨트롤을 끄고(controls=0) 이걸 씁니다.
 function PlayerControls({
@@ -2231,6 +2625,8 @@ function PlayerControls({
   const [ccOpen, setCcOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
   const shown = scrubbing != null ? scrubbing : p.current;
+  // 진행 바 폭은 CSS 전환으로 부드럽게 이어줍니다.
+  // 그래야 1초에 한 번만 갱신해도 뚝뚝 끊겨 보이지 않아요.
   const ratio = p.duration > 0 ? Math.min(1, shown / p.duration) : 0;
 
   const posFromEvent = (e) => {
@@ -2253,7 +2649,7 @@ function PlayerControls({
         background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
         zIndex: 5,
         opacity: visible ? 1 : 0,
-        transition: "opacity 0.3s ease",
+        transition: `opacity ${MOTION.base}`,
         pointerEvents: visible ? "auto" : "none",
       }}
     >
@@ -2277,7 +2673,15 @@ function PlayerControls({
         style={{ padding: "10px 0", cursor: "pointer", touchAction: "none" }}
       >
         <div style={{ position: "relative", height: 4, borderRadius: 2, background: "rgba(255,255,255,0.28)" }}>
-          <div style={{ width: `${ratio * 100}%`, height: "100%", borderRadius: 2, background: "#E8A33D" }} />
+          <div
+            style={{
+              width: `${ratio * 100}%`,
+              height: "100%",
+              borderRadius: 2,
+              background: "#E8A33D",
+              transition: scrubbing != null ? "none" : "width 1s linear",
+            }}
+          />
           <div
             style={{
               position: "absolute",
@@ -2288,7 +2692,10 @@ function PlayerControls({
               height: scrubbing != null ? 16 : 12,
               borderRadius: "50%",
               background: "#E8A33D",
-              transition: "width 0.15s ease, height 0.15s ease",
+              transition:
+                scrubbing != null
+                  ? `width ${MOTION.fast}, height ${MOTION.fast}`
+                  : `left 1s linear, width ${MOTION.fast}, height ${MOTION.fast}`,
             }}
           />
         </div>
@@ -2479,6 +2886,46 @@ function MenuItem({ icon: Icon, label, hint, onClick }) {
   );
 }
 
+// 영상 목록. 재생 시간 같은 다른 상태가 바뀌어도 목록은 그대로 두려고 따로 뺐습니다.
+const VideoGrid = React.memo(
+  function VideoGrid({ items, avatars, onSelect, onOpenChannel, onMute }) {
+    return (
+      <div
+        className="video-grid fade-in"
+        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}
+      >
+        {items.map((v) => (
+          <VideoCard
+            key={v.videoId}
+            v={v}
+            avatars={avatars}
+            onClick={() => onSelect(v)}
+            onOpenChannel={onOpenChannel}
+            onMute={onMute}
+          />
+        ))}
+      </div>
+    );
+  },
+  (a, b) => a.items === b.items && a.avatars === b.avatars && a.onMute === b.onMute
+);
+
+// 화면 폭이 기준보다 좁은지 알려줍니다.
+// CSS로 양쪽을 다 그려놓고 감추면 DOM이 두 배가 되니, 한쪽만 그리려고 씁니다.
+function useNarrow(maxWidth = 900) {
+  const [narrow, setNarrow] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= maxWidth : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const onChange = (e) => setNarrow(e.matches);
+    setNarrow(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, [maxWidth]);
+  return narrow;
+}
+
 function BackLink({ onClick }) {
   return (
     <button
@@ -2524,9 +2971,14 @@ function PlayerView({
   shared,
 }) {
 
+  const [descOpen, setDescOpen] = useState(false);
+  // 좁은 화면이면 "다음 영상"을 댓글 위에, 넓으면 오른쪽에 그립니다.
+  const narrow = useNarrow(900);
+
   // 다른 영상으로 넘어가면 맨 위로. 부드럽게(smooth) 굴리면 접기·펼치기
   // 애니메이션과 움직임이 겹쳐서 오히려 버벅여 보여서 즉시 이동합니다.
   useEffect(() => {
+    setDescOpen(false);
     window.scrollTo(0, 0);
   }, [v.videoId]);
 
@@ -2692,7 +3144,7 @@ function PlayerView({
                   fontSize: 13,
                   cursor: "pointer",
                   fontFamily: "'Inter', sans-serif",
-                  transition: "background 0.2s ease",
+                  transition: `background ${MOTION.fast}`,
                 }}
               >
                 <Share2 size={15} /> {shared ? "복사됨!" : "공유"}
@@ -2752,13 +3204,71 @@ function PlayerView({
                 lineHeight: 1.6,
                 fontFamily: "'Inter', sans-serif",
                 whiteSpace: "pre-wrap",
-                maxHeight: 140,
-                overflow: "auto",
+                maxHeight: descOpen ? "none" : 140,
+                overflow: descOpen ? "visible" : "hidden",
               }}
+              className="selectable"
             >
-              {v.description.slice(0, 400)}
-              {v.description.length > 400 ? "…" : ""}
+              <LinkedText text={descOpen ? v.description : v.description.slice(0, 400)} />
+              {!descOpen && v.description.length > 400 && "…"}
+              {v.description.length > 400 && (
+                <button
+                  onClick={() => setDescOpen((o) => !o)}
+                  style={{
+                    display: "block",
+                    marginTop: 8,
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    color: "#E8A33D",
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                    fontFamily: "'Inter', sans-serif",
+                  }}
+                >
+                  {descOpen ? "접기" : "더 보기"}
+                </button>
+              )}
             </div>
+          )}
+
+          {/* 좁은 화면에서는 "다음 영상"이 댓글 아래로 밀려 찾기 어려워집니다.
+              그래서 댓글 위에 같은 목록을 한 번 더 보여줍니다. */}
+          {narrow && (
+          <div className="related-inline">
+          <div style={{ color: "#8C8578", fontFamily: "'Inter', sans-serif", fontSize: 12.5, marginBottom: 12, letterSpacing: 0.3 }}>
+            다음 영상
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {related.map((r) => (
+              <div key={r.videoId} style={{ display: "flex", gap: 10, cursor: "pointer" }} onClick={() => onLoadCustom(r.videoId, r)}>
+                <div style={{ width: 140, flexShrink: 0 }}>
+                  <Thumb v={r} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      color: "#F2EDE4",
+                      fontFamily: "'Fraunces', serif",
+                      fontSize: 13,
+                      lineHeight: 1.35,
+                      fontWeight: 600,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                    }}
+                  >
+                    {r.title}
+                  </div>
+                  <div style={{ color: "#8C8578", fontSize: 11.5, marginTop: 4 }}>{r.channelTitle}</div>
+                  <div style={{ color: "#8C8578", fontSize: 11, fontFamily: "'Inter', sans-serif" }}>{r.views}회</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          </div>
           )}
 
           <div style={{ marginTop: 26 }}>
@@ -2785,7 +3295,8 @@ function PlayerView({
           </div>
         </div>
 
-        <div style={{ flex: "0 0 340px", minWidth: 280 }}>
+        {!narrow && (
+        <div className="related-side" style={{ flex: "0 0 340px", minWidth: 280 }}>
           <div style={{ color: "#8C8578", fontFamily: "'Inter', sans-serif", fontSize: 12.5, marginBottom: 12, letterSpacing: 0.3 }}>
             다음 영상
           </div>
@@ -2802,7 +3313,7 @@ function PlayerView({
                       fontFamily: "'Fraunces', serif",
                       fontSize: 13,
                       lineHeight: 1.35,
-                      fontWeight: 500,
+                      fontWeight: 600,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       display: "-webkit-box",
@@ -2813,12 +3324,13 @@ function PlayerView({
                     {r.title}
                   </div>
                   <div style={{ color: "#8C8578", fontSize: 11.5, marginTop: 4 }}>{r.channelTitle}</div>
-                  <div style={{ color: "#8C8578", fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" }}>{r.views}회</div>
+                  <div style={{ color: "#8C8578", fontSize: 11, fontFamily: "'Inter', sans-serif" }}>{r.views}회</div>
                 </div>
               </div>
             ))}
           </div>
         </div>
+        )}
       </div>
     </div>
   );
@@ -2851,7 +3363,7 @@ export default function App() {
   const [shortsExhausted, setShortsExhausted] = useState(false);
   const [subFeed, setSubFeed] = useState([]);
   const [subChannels, setSubChannels] = useState([]);
-  const [history, setHistory] = useState(() => loadHistory());
+  const [history, setHistory] = useState(() => historyForDisplay());
   const [playlists, setPlaylists] = useState(() => loadPlaylists());
   // 어떤 영상을 어느 재생목록에 넣을지 고르는 창
   const [playlistTarget, setPlaylistTarget] = useState(null);
@@ -2878,6 +3390,10 @@ export default function App() {
   const flipFromRef = useRef(null);
   // 지금 돌아가고 있는 전환 애니메이션. 새 애니메이션을 걸기 전에 취소합니다.
   const flipAnimRef = useRef(null);
+  // 끌기 위해 붙잡아 둔 포인터. 손을 뗐을 때 확실히 놓아주기 위해 기억해 둡니다.
+  const dragPointerRef = useRef(null);
+  // 전환하는 동안 영상이 찌그러지지 않게 반대로 걸어주는 애니메이션입니다.
+  const frameAnimRef = useRef(null);
   // 목록에서 어디까지 내려봤는지. 영상을 접고 돌아올 때 그 자리로 되돌립니다.
   const listScrollRef = useRef(0);
   // 유튜브 기본 전체화면 대신 우리가 직접 만든 전체화면입니다.
@@ -2902,6 +3418,9 @@ export default function App() {
   const [quality, setQuality] = useState("auto");
   // 전체화면일 때 화면을 돌려야 하는지 (좁고 세로로 든 기기)
   const [rotateFullscreen, setRotateFullscreen] = useState(false);
+  // 안드로이드 시스템 PiP(앱 밖에 떠 있는 작은 창)로 들어가 있는지.
+  // 이때는 영상만 꽉 채우고 나머지 화면 요소는 모두 감춥니다.
+  const [pipMode, setPipMode] = useState(false);
   // 영상이 끝났는지. 유튜브 종료 화면 대신 우리 화면을 띄우려고 씁니다.
   const [ended, setEnded] = useState(false);
   // 첫 재생이 시작되기 전까지는 유튜브 로딩 화면(로고·동영상 더보기)이 보입니다.
@@ -2909,7 +3428,8 @@ export default function App() {
   const [started, setStarted] = useState(false);
   // 로딩 덮개는 잠깐만 보여줍니다. 자동 재생이 막힌 기기(아이폰)에서는
   // 덮개를 걷어야 유튜브 재생 버튼을 누를 수 있어요.
-  const [coverShown, setCoverShown] = useState(true);
+  // 재생이 곧 시작될 것 같으면 스피너, 자동 재생이 막힌 것 같으면 "눌러서 재생"을 띄웁니다.
+  const [needsTap, setNeedsTap] = useState(false);
   // 렌더 밖(메시지 핸들러)에서 자막 상태를 참조하기 위한 사본입니다.
   const captionsOnRef = useRef(false);
   captionsOnRef.current = captionsOn;
@@ -3019,11 +3539,17 @@ export default function App() {
     };
   }, [fullscreen]);
 
-  // 덮개는 2.5초만 유지합니다. 그 안에 재생이 시작되면 자연스럽게 걷히고,
-  // 자동 재생이 막힌 기기에서는 덮개가 사라져 유튜브 재생 버튼을 누를 수 있습니다.
+  // 아이폰·아이패드는 소리가 있는 자동 재생을 막습니다. 그래서 재생이 저절로
+  // 시작되지 않고 플레이어가 계속 대기 상태로 남아요. 예전에는 스피너만 돌다가
+  // 덮개가 조용히 사라져서 "무한 로딩"처럼 보였습니다.
+  // 3초 안에 시작되지 않으면 눌러 달라고 안내합니다.
+  // 예전에는 1.5초였는데, 안드로이드처럼 자동 재생이 되는 기기에서도
+  // 버퍼링이 조금만 길면 안내가 깜빡였다 사라져서 오히려 어수선했습니다.
+  // 덮개는 터치를 통과시키므로(pointerEvents: none) 그 자리를 그대로 누르면 됩니다.
+  // 유튜브 플레이어가 직접 탭을 받아야 iOS가 재생을 허용해줍니다.
   useEffect(() => {
     if (!selected || started) return;
-    const t = setTimeout(() => setCoverShown(false), 2500);
+    const t = setTimeout(() => setNeedsTap(true), 3000);
     return () => clearTimeout(t);
   }, [selected, started]);
 
@@ -3138,21 +3664,26 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const { items, nextPageToken: token } = await fetchPopular("KR", "", categoryId);
-      setVideos(tidyForHome(withoutWatched(items)));
-      setNextPageToken(token);
       setSource({ kind: "category", categoryId });
+      const { items, nextPageToken: token } = await fetchPopular("KR", "", categoryId);
+      // 카테고리 목록도 같은 방식으로 줄을 세웁니다.
+      setVideos(rankVideos(tidyForHome(items, 0), buildTaste(), subs));
+      setNextPageToken(token);
       if (items.length === 0) setError("이 카테고리에는 지금 보여줄 영상이 없어요.");
     } catch (e) {
       setError(e.message || "영상을 불러오지 못했어요.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [subs]);
 
   const runSearch = useCallback(async (q, order = "relevance") => {
     setLoading(true);
     setError(null);
+    // 어떤 목록을 보고 있는지 먼저 표시해 둡니다.
+    // 이게 늦으면, 첫 결과가 그려지는 순간 "더 불러오기"가 아직 홈인 줄 알고
+    // 인기 영상을 검색 결과 밑에 붙여버립니다. 검색과 무관한 영상이 섞이던 원인이었어요.
+    setSource({ kind: "search", query: q, order });
     try {
       // 1단계 결과가 오면 바로 그리고, 상세 정보는 도착하는 대로 덮어씁니다.
       const { items, nextPageToken: token } = await searchYoutube(
@@ -3167,7 +3698,6 @@ export default function App() {
       );
       setVideos(items);
       setNextPageToken(token);
-      setSource({ kind: "search", query: q, order });
     } catch (e) {
       setError(e.message || "검색 중 문제가 생겼어요.");
     } finally {
@@ -3283,10 +3813,16 @@ export default function App() {
   };
 
   // 영상을 고르면 항상 펼친 상태로 엽니다.
+  // 목록에서 영상을 고를 때 씁니다. 함수가 매번 새로 만들어지면
+  // 목록 전체가 다시 그려지므로 한 번만 만들어 재사용합니다.
+  const displayListRef = useRef([]);
+  const openVideoRef = useRef(null);
+  const selectFromList = useCallback((v) => openVideoRef.current?.(v, displayListRef.current), []);
+
   const openVideo = (v, list) => {
     // 최근 본 영상으로 남깁니다.
     addHistory(v);
-    setHistory(loadHistory());
+    setHistory(historyForDisplay());
 
     // 목록을 같이 넘기면 그 안에서 이전/다음으로 넘어갈 수 있습니다.
     if (Array.isArray(list) && list.length > 0) setQueue(list);
@@ -3304,7 +3840,7 @@ export default function App() {
     setScrubbing(null);
     setEnded(false);
     setStarted(false);
-    setCoverShown(true);
+    setNeedsTap(false);
     setSelected(v);
     setMinimized(false);
     setFullscreen(false);
@@ -3436,6 +3972,8 @@ export default function App() {
       return;
     }
 
+    const timing = { duration: 280, easing: "cubic-bezier(0.22, 1, 0.36, 1)" };
+
     flipAnimRef.current?.cancel();
     flipAnimRef.current = el.animate(
       [
@@ -3445,17 +3983,63 @@ export default function App() {
         },
         { transformOrigin: "top left", transform: "translate(0px, 0px) scale(1, 1)" },
       ],
-      { duration: 280, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+      timing
     );
+
+    // 상자를 늘리면 그 안의 영상도 같이 늘어납니다.
+    // 특히 펼침(16:9)에서 전체화면(화면 비율)으로 갈 때는 가로세로 비율이 달라서
+    // 전환하는 동안 영상이 눈에 띄게 찌그러져 보였어요.
+    // 그래서 영상에는 정확히 반대 배율을 걸어 서로 상쇄시킵니다.
+    // 결과적으로 영상은 제 모양을 유지한 채, 테두리만 열리듯 커집니다.
+    const frame = playerFrameRef.current;
+    if (frame && (Math.abs(sx - sy) > 0.01 || Math.abs(sx - 1) > 0.01)) {
+      frameAnimRef.current?.cancel();
+      frameAnimRef.current = frame.animate(
+        [
+          { transformOrigin: "top left", transform: `scale(${1 / sx}, ${1 / sy})` },
+          { transformOrigin: "top left", transform: "scale(1, 1)" },
+        ],
+        timing
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minimized, fullscreen, selected?.videoId]);
 
+  // 손가락을 놓았을 때 잡아둔 포인터를 풀어줍니다.
+  // releasePointerCapture는 이미 풀린 포인터에 부르면 예외를 던집니다.
+  // 그 예외가 dragEnd 중간에서 터지면 끌던 상태가 그대로 남아버려서
+  // 그 뒤로 스와이프가 통째로 먹통이 됐어요. 그래서 통째로 감쌉니다.
+  const releaseDragPointer = (e) => {
+    const held = dragPointerRef.current;
+    dragPointerRef.current = null;
+    try {
+      const el = e?.currentTarget || held?.el;
+      const id = e?.pointerId ?? held?.id;
+      if (el && id != null && el.hasPointerCapture?.(id)) el.releasePointerCapture(id);
+    } catch (err) {
+      // 이미 풀려 있으면 할 일이 없습니다.
+    }
+  };
+
   const dragStart = (e) => {
+    // 앞선 끌기가 깔끔하게 끝나지 못했을 수 있으니 항상 초기화하고 시작합니다.
+    if (dragStartRef.current != null) {
+      if (dragRafRef.current) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      clearDragStyle();
+    }
     dragStartRef.current = e.clientY;
     dragMovedRef.current = false;
     controlsWereShownRef.current = controlsShownRef.current;
     dragYRef.current = 0;
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+    dragPointerRef.current = { el: e.currentTarget, id: e.pointerId };
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch (err) {
+      // 캡처가 안 돼도 끌기는 그대로 동작합니다.
+    }
   };
 
   const dragMove = (e) => {
@@ -3475,7 +4059,7 @@ export default function App() {
   const dragEnd = (e) => {
     if (dragStartRef.current == null) return;
     dragStartRef.current = null;
-    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
+    releaseDragPointer(e);
     if (dragRafRef.current) {
       cancelAnimationFrame(dragRafRef.current);
       dragRafRef.current = null;
@@ -3510,8 +4094,43 @@ export default function App() {
     onPointerMove: dragMove,
     onPointerUp: dragEnd,
     onPointerCancel: dragEnd,
+    // 제목을 끌면 글자가 선택됩니다. 그 선택된 글자 위에서 다시 끌면 브라우저가
+    // "글자를 끌어다 놓기"를 시작하면서 우리 제스처를 취소해버려요(pointercancel).
+    // 그래서 한 번 끈 뒤로 스와이프가 통째로 안 먹히는 일이 생겼습니다.
+    // 끌어다 놓기만 막으면 됩니다. 글자 선택·복사는 그대로 됩니다.
+    draggable: false,
+    onDragStart: (e) => e.preventDefault(),
     style: { touchAction: "none" },
   };
+
+  // ── 안드로이드 앱(Capacitor)과 주고받기 ──────────────
+  // 앱으로 감싸지 않은 웹에서는 window.KinexNative가 없으므로 전부 조용히 넘어갑니다.
+
+  // 지금 재생 중인지 앱이 알 수 있게 창에 적어둡니다.
+  // 앱은 이 값을 주기적으로 읽어서 PiP로 들어갈지, 알림을 띄워
+  // 재생을 이어갈지 판단합니다. 그냥 전역 변수라 앱이 아니어도 아무 문제 없어요.
+  useEffect(() => {
+    window.kinexPlaying = !!selected && pState.playing;
+    window.kinexTitle = selected?.title || "";
+    return () => {
+      window.kinexPlaying = false;
+    };
+  }, [selected, pState.playing]);
+
+  // 앱이 PiP로 들어가고 나올 때 알려주는 창구입니다.
+  useEffect(() => {
+    window.kinexPipChanged = (on) => setPipMode(!!on);
+    return () => {
+      delete window.kinexPipChanged;
+    };
+  }, []);
+
+  // 채널 화면으로 들어가면 펼친 플레이어를 작은 창으로 접습니다.
+  // 접지 않으면 플레이어가 잡아둔 자리에 그대로 떠 있어서 채널 화면을 가립니다.
+  useEffect(() => {
+    if (openChannel && selected && !minimized) changeView({ minimized: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openChannel]);
 
   // 접히거나 영상이 바뀌면 끌던 상태를 초기화합니다.
   useEffect(() => {
@@ -3519,6 +4138,37 @@ export default function App() {
     dragStartRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minimized, fullscreen, selected?.videoId]);
+
+  // 끌기가 끝났다는 신호를 놓치는 경우가 있습니다.
+  // 끌던 도중에 그 요소가 화면에서 사라지거나(작은 창으로 바뀌는 등),
+  // 앱이 백그라운드로 넘어가면 우리 손등 위에서 pointerup이 안 옵니다.
+  // 그러면 "아직 끌고 있는 중"으로 남아서 다음 스와이프가 통째로 안 먹혀요.
+  // 창 전체에서 한 번 더 받아 확실히 풀어줍니다.
+  useEffect(() => {
+    const finishStuckDrag = () => {
+      // 정상적으로 끝났으면 이미 비어 있으니 할 일이 없습니다.
+      if (dragStartRef.current == null) return;
+      dragStartRef.current = null;
+      dragYRef.current = 0;
+      if (dragRafRef.current) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      releaseDragPointer(null);
+      // 어디로 가려던 건지 알 수 없으니 원래 자리로 되돌리기만 합니다.
+      springBackDragStyle();
+    };
+
+    window.addEventListener("pointerup", finishStuckDrag);
+    window.addEventListener("pointercancel", finishStuckDrag);
+    window.addEventListener("blur", finishStuckDrag);
+    return () => {
+      window.removeEventListener("pointerup", finishStuckDrag);
+      window.removeEventListener("pointercancel", finishStuckDrag);
+      window.removeEventListener("blur", finishStuckDrag);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── 재생목록 ──
   const createPlaylist = (name, firstVideo) => {
@@ -3552,6 +4202,8 @@ export default function App() {
     savePlaylists(next);
     flash("재생목록을 지웠어요.");
   };
+
+  openVideoRef.current = openVideo;
 
   const handleSubmitSearch = () => {
     if (!query.trim()) return;
@@ -3588,8 +4240,13 @@ export default function App() {
       setError(null);
     } else if (label === "기록") {
       setError(null);
-      setHistory(loadHistory());
+      setHistory(historyForDisplay());
     } else {
+      // 홈으로 돌아오면 검색 상태를 완전히 비웁니다.
+      // 검색어를 지우지 않으면 검색창에 글자가 남아 있어서
+      // 아직 검색 결과를 보고 있는 것처럼 보입니다.
+      setQuery("");
+      setSearchOrder("relevance");
       setCategory("전체");
       runHome(subs);
     }
@@ -3599,6 +4256,22 @@ export default function App() {
   const flash = (message) => {
     setToast(message);
     setTimeout(() => setToast(null), 2200);
+  };
+
+  // 관심 없음은 되돌리기 번거로우니 먼저 물어봅니다.
+  const handleMute = (kind, video) => setMuteConfirm({ kind, video });
+
+  const applyMute = ({ kind, video }) => {
+    if (kind === "channel") {
+      muteChannel(video.channelId);
+      setVideos((prev) => prev.filter((x) => x.channelId !== video.channelId));
+      flash("이 채널은 추천하지 않을게요.");
+    } else {
+      muteVideo(video.videoId);
+      setVideos((prev) => prev.filter((x) => x.videoId !== video.videoId));
+      flash("이 영상을 숨겼어요.");
+    }
+    setMuteConfirm(null);
   };
 
   const clearSeenShorts = () => {
@@ -3741,7 +4414,7 @@ export default function App() {
 
         // 값이 그대로면 갱신하지 않습니다 (불필요한 다시 그리기 방지).
         const same =
-          Math.abs(next.current - prev.current) < 0.25 &&
+          Math.floor(next.current) === Math.floor(prev.current) &&
           next.duration === prev.duration &&
           next.volume === prev.volume &&
           next.muted === prev.muted &&
@@ -3876,6 +4549,8 @@ export default function App() {
 
   const [playerShared, setPlayerShared] = useState(false);
   const [shareTarget, setShareTarget] = useState(null);
+  // 관심 없음을 누르면 여기 담아두고 확인 창을 띄웁니다.
+  const [muteConfirm, setMuteConfirm] = useState(null);
 
   // 기기의 공유 시트를 띄웁니다. 카톡·메시지 등으로 바로 보낼 수 있어요.
   // 공유 시트를 못 쓰는 환경에서만 링크 복사 창으로 넘어갑니다.
@@ -4132,6 +4807,7 @@ export default function App() {
   // 보관함일 땐 API를 부르지 않고 저장된 목록을 그대로 보여줍니다.
   const displayList =
     activeNav === "보관함" ? savedVideos : activeNav === "기록" ? history : videos;
+  displayListRef.current = displayList;
 
   useEffect(() => {
     // 목록이 화면에 그려진 뒤에 프로필 사진을 요청합니다.
@@ -4155,7 +4831,9 @@ export default function App() {
         let fresh = res.items.filter((v) => !seen.has(v.videoId));
         // 처음 불러올 때와 같은 기준을 적용합니다.
         // 안 그러면 스크롤할수록 걸러냈던 숏츠·음악·본 영상이 다시 섞여요.
-        if (source.kind !== "search") fresh = tidyForHome(withoutWatched(fresh, 0), 0);
+        if (source.kind !== "search") {
+          fresh = rankVideos(tidyForHome(fresh, 0), buildTaste(), subs);
+        }
         return [...prev, ...fresh];
       });
       setNextPageToken(res.nextPageToken);
@@ -4165,7 +4843,7 @@ export default function App() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextPageToken, loadingMore, loading, activeNav, source]);
+  }, [nextPageToken, loadingMore, loading, activeNav, source, subs]);
 
   // 감시 지점이 화면에서 사라졌다 다시 생길 때(영상을 열었다 닫을 때 등)
   // 예전 자리를 계속 보고 있으면 스크롤을 감지하지 못합니다.
@@ -4237,10 +4915,13 @@ export default function App() {
   }, [selected]);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0E0D0B", fontFamily: "'Inter', sans-serif" }}>
+    <div
+      className={pipMode ? "pip-mode" : undefined}
+      style={{ minHeight: "100vh", background: "#0E0D0B", fontFamily: "'Inter', sans-serif" }}
+    >
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link
-        href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600&family=Inter:wght@400;600&family=IBM+Plex+Mono:wght@400&display=swap"
         rel="stylesheet"
       />
 
@@ -4284,7 +4965,7 @@ export default function App() {
           />
           <span
             className="logo-text"
-            style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 20, color: "#F2EDE4", letterSpacing: -0.5 }}
+            style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 20, color: "#F2EDE4", letterSpacing: -0.5 }}
           >
             키넥스
           </span>
@@ -4468,7 +5149,7 @@ export default function App() {
                             color: "#8C8578",
                             fontSize: 11,
                             marginTop: 3,
-                            fontFamily: "'IBM Plex Mono', monospace",
+                            fontFamily: "'Inter', sans-serif",
                           }}
                         >
                           {v.channelTitle} · {v.time}
@@ -4520,7 +5201,7 @@ export default function App() {
                       color: "#8C8578",
                       fontSize: 11.5,
                       marginTop: 4,
-                      fontFamily: "'IBM Plex Mono', monospace",
+                      fontFamily: "'Inter', sans-serif",
                     }}
                   >
                     구독 {subs.length} · 저장 {savedVideos.length} · 좋아요 {likes.length}
@@ -4539,10 +5220,23 @@ export default function App() {
                 <MenuItem
                   icon={Trash2}
                   label="시청 기록 지우기"
-                  hint="진행률 막대가 사라지고 홈에 다시 나옵니다"
+                  hint="기록 탭이 비워지고, 진행률 막대도 사라집니다"
                   onClick={() => {
                     clearProgress();
+                    clearHistory();
+                    setHistory([]);
                     flash("시청 기록을 지웠어요.");
+                    setShowMenu(false);
+                  }}
+                />
+                <MenuItem
+                  icon={RotateCcw}
+                  label="추천 초기화"
+                  hint="관심 없음 표시와 채널·카테고리 선호도를 모두 지웁니다"
+                  onClick={() => {
+                    clearMuted();
+                    clearTopicScores();
+                    flash("추천을 초기화했어요.");
                     setShowMenu(false);
                   }}
                 />
@@ -4603,7 +5297,7 @@ export default function App() {
                 color: activeNav === label ? "#E8A33D" : "#B8B2A4",
                 marginBottom: 2,
                 fontSize: 13.5,
-                fontWeight: 500,
+                fontWeight: 600,
               }}
             >
               <Icon size={18} />
@@ -4713,7 +5407,7 @@ export default function App() {
                 >
                   <div style={{ fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, color: "#F2EDE4" }}>
                     시청 기록
-                    <span style={{ color: "#8C8578", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, marginLeft: 10, fontWeight: 400 }}>
+                    <span style={{ color: "#8C8578", fontFamily: "'Inter', sans-serif", fontSize: 13, marginLeft: 10, fontWeight: 400 }}>
                       {history.length}개
                     </span>
                   </div>
@@ -4721,6 +5415,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         clearHistory();
+                        clearProgress();
                         setHistory([]);
                         flash("시청 기록을 지웠어요.");
                       }}
@@ -4756,7 +5451,7 @@ export default function App() {
                   }}
                 >
                   구독
-                  <span style={{ color: "#8C8578", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 400 }}>
+                  <span style={{ color: "#8C8578", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 400 }}>
                     채널 {subs.length}개
                   </span>
                 </div>
@@ -4771,7 +5466,7 @@ export default function App() {
                   }}
                 >
                   보관함
-                  <span style={{ color: "#8C8578", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, marginLeft: 10 }}>
+                  <span style={{ color: "#8C8578", fontFamily: "'Inter', sans-serif", fontSize: 13, marginLeft: 10 }}>
                     {savedVideos.length}개
                   </span>
                 </div>
@@ -4965,7 +5660,7 @@ export default function App() {
                               >
                                 {p.name}
                               </div>
-                              <div style={{ color: "#8C8578", fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace" }}>
+                              <div style={{ color: "#8C8578", fontSize: 11.5, fontFamily: "'Inter', sans-serif" }}>
                                 영상 {p.videos.length}개
                               </div>
                             </div>
@@ -5039,7 +5734,7 @@ export default function App() {
                               color: "#8C8578",
                               fontSize: 11.5,
                               marginTop: 4,
-                              fontFamily: "'IBM Plex Mono', monospace",
+                              fontFamily: "'Inter', sans-serif",
                             }}
                           >
                             {c.subscribers ? `구독자 ${c.subscribers}명` : ""}
@@ -5068,17 +5763,13 @@ export default function App() {
               )}
 
               {activeNav !== "구독" && !loading && !error && displayList.length > 0 && (
-                <div className="video-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "28px 20px" }}>
-                  {displayList.map((v) => (
-                    <VideoCard
-                      key={v.videoId}
-                      v={v}
-                      avatars={avatars}
-                      onClick={() => openVideo(v, displayList)}
-                      onOpenChannel={(id) => setOpenChannel(id)}
-                    />
-                  ))}
-                </div>
+                <VideoGrid
+                  items={displayList}
+                  avatars={avatars}
+                  onSelect={selectFromList}
+                  onOpenChannel={setOpenChannel}
+                  onMute={activeNav === "홈" ? handleMute : undefined}
+                />
               )}
 
               {activeNav !== "보관함" && activeNav !== "구독" && activeNav !== "기록" && !loading && !error && (
@@ -5118,15 +5809,34 @@ export default function App() {
       {selected && (minimized || fullscreen || slotRect) && (
         <div
           ref={playerBoxRef}
-          className={minimized ? "player-box mini-player" : "player-box"}
+          className={
+            minimized
+              ? "player-box mini-player"
+              : fullscreen
+              ? "player-box " + (rotateFullscreen ? "player-fs-rot" : "player-fs")
+              : "player-box"
+          }
           onPointerMove={() => {
             // 끌고 있는 중이거나 이미 보이는 중이면 아무것도 하지 않습니다.
             if (dragStartRef.current != null || controlsShown) return;
             showControls();
           }}
           style={
-            fullscreen
+            pipMode
               ? {
+                  // PiP 창 안에서는 영상만 꽉 채웁니다.
+                  position: "fixed",
+                  inset: 0,
+                  width: "100vw",
+                  height: "100vh",
+                  background: "#000",
+                  zIndex: 999,
+                  overflow: "hidden",
+                }
+              : fullscreen
+              ? {
+                  // 브라우저에 미리 알려주면 움직임이 더 매끄럽습니다.
+                  willChange: "transform, opacity",
                   position: "fixed",
                   inset: 0,
                   // 세로로 든 폰에서는 90도 돌려 화면을 꽉 채웁니다.
@@ -5142,6 +5852,7 @@ export default function App() {
                 }
               : minimized
               ? {
+                  willChange: "transform, opacity",
                   position: "fixed",
                   right: 16,
                   bottom: 16,
@@ -5240,7 +5951,7 @@ export default function App() {
 
           {/* 재생이 시작되기 전에는 유튜브 로딩 화면(로고·제목·동영상 더보기)이 보입니다.
               끌 수 없으므로 영상 썸네일로 덮어 가립니다. */}
-          {!minimized && !started && coverShown && (
+          {!minimized && !started && (
             <div
               style={{
                 position: "absolute",
@@ -5268,7 +5979,47 @@ export default function App() {
                   }}
                 />
               )}
-              <Loader2 size={26} className="spin" color="#F2EDE4" style={{ position: "relative" }} />
+              {needsTap ? (
+                // 자동 재생이 막힌 기기용 안내입니다. 덮개가 터치를 통과시키므로
+                // 사용자가 이 자리를 그대로 누르면 유튜브 플레이어가 탭을 받습니다.
+                <div
+                  style={{
+                    position: "relative",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 62,
+                      height: 62,
+                      borderRadius: "50%",
+                      background: "rgba(232,163,61,0.92)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      boxShadow: "0 6px 24px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    <Play size={26} color="#17140F" fill="#17140F" style={{ marginLeft: 3 }} />
+                  </div>
+                  <div
+                    style={{
+                      color: "#F2EDE4",
+                      fontFamily: "'Inter', sans-serif",
+                      fontSize: 13.5,
+                      fontWeight: 500,
+                      textShadow: "0 2px 8px rgba(0,0,0,0.8)",
+                    }}
+                  >
+                    화면을 눌러 재생하세요
+                  </div>
+                </div>
+              ) : (
+                <Loader2 size={26} className="spin" color="#F2EDE4" style={{ position: "relative" }} />
+              )}
             </div>
           )}
 
@@ -5276,12 +6027,17 @@ export default function App() {
               이걸 끄는 방법이 없어서 어두운 층으로 덮어 가립니다. */}
           {!minimized && started && !ended && !pState.playing && (
             <div
-              onPointerDown={(e) => e.stopPropagation()}
+              // 이 덮개는 화면 전체를 가리므로, 여기서도 쓸어내려 접을 수 있어야 합니다.
+              // 예전에는 포인터를 여기서 막아버려서 일시정지 중에는 스와이프가 안 먹혔어요.
+              {...dragHandlers}
               onClick={(e) => {
                 e.stopPropagation();
+                // 끌었을 때는 재생/정지 전환으로 보지 않습니다.
+                if (dragMovedRef.current) return;
                 togglePlay();
               }}
               style={{
+                ...dragHandlers.style,
                 position: "absolute",
                 inset: 0,
                 zIndex: 3,
@@ -5299,9 +6055,11 @@ export default function App() {
               유튜브 종료 화면을 누르면 앱 밖으로 나가버려서 대신 만들었어요. */}
           {!minimized && ended && (
             <div
-              onPointerDown={(e) => e.stopPropagation()}
+              // 종료 화면에서도 쓸어내려 접을 수 있게 합니다.
+              {...dragHandlers}
               onClick={(e) => e.stopPropagation()}
               style={{
+                ...dragHandlers.style,
                 position: "absolute",
                 inset: 0,
                 zIndex: 6,
@@ -5392,16 +6150,22 @@ export default function App() {
             </div>
           )}
 
-          {/* [4] 가운데 재생/일시정지 버튼. 컨트롤이 보일 때 같이 나타납니다. */}
-          {!minimized && started && !ended && (
+          {/* 가운데 재생/일시정지 버튼. 재생이 시작된 뒤에만 나옵니다.
+              시작 전에 띄우면 유튜브 재생 버튼을 가려서 아예 재생이 안 됩니다. */}
+          {!minimized && !pipMode && started && !ended && (
             <button
-              onPointerDown={(e) => e.stopPropagation()}
+              // 일시정지하면 이 버튼이 화면 한가운데를 차지합니다.
+              // 여기서 시작하는 쓸어내리기도 받아줘야 자연스러워요.
+              {...dragHandlers}
               onClick={(e) => {
                 e.stopPropagation();
+                // 끌었을 때는 눌렀다고 보지 않습니다.
+                if (dragMovedRef.current) return;
                 togglePlay();
                 showControls();
               }}
               style={{
+                ...dragHandlers.style,
                 position: "absolute",
                 top: "50%",
                 left: "50%",
@@ -5419,7 +6183,7 @@ export default function App() {
                 cursor: "pointer",
                 opacity: controlsShown || !pState.playing ? 1 : 0,
                 pointerEvents: controlsShown || !pState.playing ? "auto" : "none",
-                transition: "opacity 0.3s ease",
+                transition: `opacity ${MOTION.base}`,
               }}
             >
               {pState.playing ? (
@@ -5430,7 +6194,7 @@ export default function App() {
             </button>
           )}
 
-          {!minimized && (
+          {!minimized && !pipMode && started && (
             <PlayerControls
               p={pState}
               visible={controlsShown}
@@ -5504,14 +6268,101 @@ export default function App() {
         </div>
       )}
 
+      {/* 관심 없음 확인 */}
+      {muteConfirm && (
+        <>
+          <div
+            onClick={() => setMuteConfirm(null)}
+            className="fade-in"
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 80 }}
+          />
+          <div
+            className="rise-in"
+            style={{
+              position: "fixed",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "min(340px, calc(100vw - 32px))",
+              background: "#141210",
+              border: "1px solid #2C271F",
+              borderRadius: 14,
+              padding: 16,
+              zIndex: 81,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.7)",
+            }}
+          >
+            <div style={{ color: "#F2EDE4", fontSize: 14.5, fontWeight: 600, marginBottom: 8 }}>
+              {muteConfirm.kind === "channel" ? "이 채널을 추천에서 뺄까요?" : "이 영상을 숨길까요?"}
+            </div>
+            <div
+              style={{
+                color: "#B8B2A4",
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                marginBottom: 14,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {muteConfirm.kind === "channel" ? muteConfirm.video.channelTitle : muteConfirm.video.title}
+            </div>
+            <div style={{ color: "#5C574C", fontSize: 11.5, marginBottom: 14, lineHeight: 1.5 }}>
+              {muteConfirm.kind === "channel"
+                ? "이 채널 영상이 홈에 더는 나오지 않습니다. 검색으로는 계속 볼 수 있어요."
+                : "이 영상이 홈에 더는 나오지 않습니다."}
+              <br />
+              설정의 "추천 초기화"로 되돌릴 수 있어요.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setMuteConfirm(null)}
+                style={{
+                  flex: 1,
+                  background: "#231F19",
+                  border: "none",
+                  borderRadius: 8,
+                  color: "#B8B2A4",
+                  padding: "10px 0",
+                  fontSize: 12.5,
+                  cursor: "pointer",
+                }}
+              >
+                취소
+              </button>
+              <button
+                onClick={() => applyMute(muteConfirm)}
+                style={{
+                  flex: 1,
+                  background: "#B85C4F",
+                  border: "none",
+                  borderRadius: 8,
+                  color: "#F2EDE4",
+                  padding: "10px 0",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {muteConfirm.kind === "channel" ? "추천 안 함" : "숨기기"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* 링크 복사 확인 */}
       {shareTarget && (
         <>
           <div
             onClick={() => setShareTarget(null)}
+            className="fade-in"
             style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 80 }}
           />
           <div
+            className="rise-in"
             style={{
               position: "fixed",
               left: "50%",
@@ -5601,9 +6452,11 @@ export default function App() {
         <>
           <div
             onClick={() => setPlaylistTarget(null)}
+            className="fade-in"
             style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 80 }}
           />
           <div
+            className="rise-in"
             style={{
               position: "fixed",
               left: "50%",
@@ -5794,6 +6647,59 @@ export default function App() {
         * { box-sizing: border-box; }
         input::placeholder { color: #5C574C; }
 
+        /* ── 움직임 ──
+           버튼·링크·칩은 손을 대면 부드럽게 반응하게 합니다.
+           색·투명도만 바꾸는 건 화면을 다시 계산하지 않아 가볍습니다. */
+        button, a, input {
+          transition: background-color 120ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                      color 120ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                      border-color 120ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                      opacity 120ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                      transform 120ms cubic-bezier(0.22, 0.61, 0.36, 1);
+        }
+        /* 누르는 순간 살짝 눌리는 느낌 */
+        button:active {
+          transform: scale(0.96);
+        }
+
+        /* 화면에 새로 나타나는 목록·창은 스르륵 떠오르게 */
+        @keyframes riseIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .rise-in {
+          animation: riseIn 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        .fade-in {
+          animation: fadeIn 200ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+        }
+
+        /* 움직임을 줄이도록 설정한 기기에서는 애니메이션을 끕니다. */
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
+
+        /* "다음 영상" 목록: 넓은 화면은 오른쪽, 좁은 화면은 댓글 위에 보여줍니다. */
+        .related-inline { display: none; }
+        @media (max-width: 900px) {
+          .related-inline { display: block; margin-top: 26px; }
+          .related-side { display: none !important; }
+        }
+
+        /* 상단 바는 화면에 붙어 있어서(sticky) 자기 여백을 직접 가져야
+           시계·배터리 표시와 겹치지 않습니다. */
+        .top-bar {
+          padding-top: calc(14px + env(safe-area-inset-top)) !important;
+        }
+
         /* 좁은 화면에서 버튼 글자가 한 글자씩 세로로 서는 걸 막습니다. */
         button {
           white-space: nowrap;
@@ -5921,6 +6827,46 @@ export default function App() {
             right: 12px !important;
           }
         }
+        /* PiP 창 안에서는 영상 말고 전부 감춥니다.
+           안 그러면 작은 창에 앱 전체가 축소돼 들어가서 아무것도 안 보입니다. */
+        .pip-mode .top-bar,
+        .pip-mode .sidebar,
+        .pip-mode .bottom-tabs,
+        .pip-mode .page-pad {
+          display: none !important;
+        }
+        /* 아이폰에서 글자 크기가 16px보다 작은 입력칸을 누르면
+           사파리가 화면을 확대해버립니다. user-scalable=no로도 못 막아요.
+           손가락으로 쓰는 기기에서만 16px로 올려 확대를 막습니다. */
+        @media (pointer: coarse) {
+          input, textarea, select {
+            font-size: 16px !important;
+          }
+        }
+
+        /* 아이폰 사파리에서 100vh는 "주소창이 숨겨졌을 때의 높이"입니다.
+           그래서 주소창이 보이는 동안에는 화면 밖으로 넘쳐서 아래가 잘립니다.
+           dvh는 지금 실제로 보이는 높이라 정확해요.
+           지원하지 않는 기기는 아래 @supports를 건너뛰고 기존 vh 값을 그대로 씁니다. */
+        @supports (height: 100dvh) {
+          .shorts-stage {
+            height: calc(100dvh - 57px) !important;
+          }
+          .player-fs {
+            width: 100dvw !important;
+            height: 100dvh !important;
+          }
+          .player-fs-rot {
+            width: 100dvh !important;
+            height: 100dvw !important;
+          }
+          @media (max-width: 600px) {
+            .shorts-stage {
+              height: calc(100dvh - 57px - 76px - env(safe-area-inset-bottom)) !important;
+            }
+          }
+        }
+
         /* 플레이어는 계속 움직이는 요소라 미리 별도 레이어로 올려둡니다. */
         .player-box { will-change: transform; }
         ::-webkit-scrollbar { height: 6px; width: 8px; }

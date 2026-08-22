@@ -17,7 +17,7 @@
             android:launchMode="singleTask"
             android:exported="true"
             android:resizeableActivity="true"
-            android:supportsPictureInPicture="false">
+            android:supportsPictureInPicture="true">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -25,6 +25,12 @@
             </intent-filter>
 
         </activity>
+
+        <!-- 앱을 벗어나도 재생이 이어지게 붙잡아 두는 서비스입니다. -->
+        <service
+            android:name=".PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -40,4 +46,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 앱을 벗어나도 재생을 이어가기 위한 권한들입니다. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
